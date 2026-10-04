@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: commander
+  datasource:
+    url: jdbc:postgresql://localhost:5433/commander
+    username: commander
+    password: commander
+  jpa:
+    hibernate.ddl-auto: validate
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      init:
+        pull-model-strategy: never
+      chat.options:
+        model: qwen3:8b
+        temperature: 0.1
+server:
+  port: 8080
