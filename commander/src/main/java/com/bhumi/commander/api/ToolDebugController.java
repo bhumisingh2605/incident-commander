@@ -1,7 +1,9 @@
 package com.bhumi.commander.api;
 
 import com.bhumi.commander.tools.DependencyTools;
+import com.bhumi.commander.tools.DeployTools;
 import com.bhumi.commander.tools.HealthTools;
+import com.bhumi.commander.tools.LogTools;
 import com.bhumi.commander.tools.MetricsTools;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
@@ -17,12 +19,13 @@ public class ToolDebugController {
     private final MetricsTools metrics;
     private final HealthTools health;
     private final DependencyTools deps;
+    private final LogTools logs;
+    private final DeployTools deploys;
     private final ChatClient chat;
 
     public ToolDebugController(ChatClient.Builder builder, MetricsTools metrics,
-                               HealthTools health, DependencyTools deps) {
-        // Thinking off: Qwen3 otherwise spends hundreds of hidden tokens per step,
-        // which is very slow on CPU.
+                               HealthTools health, DependencyTools deps,
+                               LogTools logs, DeployTools deploys) {
         this.chat = builder
                 .defaultOptions(OllamaChatOptions.builder()
                         .model("qwen3:8b")
@@ -32,6 +35,8 @@ public class ToolDebugController {
         this.metrics = metrics;
         this.health = health;
         this.deps = deps;
+        this.logs = logs;
+        this.deploys = deploys;
     }
 
     @GetMapping("/metrics")
@@ -50,6 +55,17 @@ public class ToolDebugController {
         return deps.getDependencies(service);
     }
 
+    @GetMapping("/logs")
+    public String logsEndpoint(@RequestParam String service,
+                               @RequestParam(defaultValue = "10") int minutes) {
+        return logs.getLogs(service, minutes);
+    }
+
+    @GetMapping("/deploys")
+    public String deploysEndpoint(@RequestParam(defaultValue = "60") int minutes) {
+        return deploys.getRecentDeploys(minutes);
+    }
+
     @GetMapping("/ping")
     public String ping() {
         return chat.prompt()
@@ -63,7 +79,7 @@ public class ToolDebugController {
         return chat.prompt()
                 .system("You are an SRE assistant. Use the tools to answer with real data. Never guess.")
                 .user(q)
-                .tools(metrics, health, deps)
+                .tools(metrics, health, deps, logs, deploys)
                 .call()
                 .content();
     }
