@@ -7,6 +7,7 @@ spring:
     password: commander
   jpa:
     hibernate.ddl-auto: validate
+    open-in-view: false
   ai:
     ollama:
       base-url: http://localhost:11434
@@ -17,3 +18,5 @@ spring:
         temperature: 0.1
 server:
   port: 8080
+commander:
+  prometheus-url: http://localhost:9090
