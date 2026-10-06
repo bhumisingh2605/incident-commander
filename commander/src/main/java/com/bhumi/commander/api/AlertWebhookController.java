@@ -1,20 +1,29 @@
 package com.bhumi.commander.api;
 
 import com.bhumi.commander.dto.AlertmanagerPayload;
+import com.bhumi.commander.incident.IncidentService;
 import java.time.OffsetDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/alerts")
 public class AlertWebhookController {
     private static final Logger log = LoggerFactory.getLogger(AlertWebhookController.class);
-    private final JdbcClient jdbc;
 
-    public AlertWebhookController(JdbcClient jdbc) { this.jdbc = jdbc; }
+    private final JdbcClient jdbc;
+    private final IncidentService incidents;
+
+    public AlertWebhookController(JdbcClient jdbc, IncidentService incidents) {
+        this.jdbc = jdbc;
+        this.incidents = incidents;
+    }
 
     @PostMapping
     public ResponseEntity<Void> receive(@RequestBody AlertmanagerPayload payload) {
@@ -37,6 +46,16 @@ public class AlertWebhookController {
                     .update();
 
             log.info("ALERT {} [{}] on {}: {}", name, a.status(), app, summary);
+
+            try {
+                if ("firing".equals(a.status())) {
+                    incidents.onAlertFiring(a.fingerprint(), name, app, severity, summary);
+                } else {
+                    incidents.onAlertResolved(a.fingerprint());
+                }
+            } catch (Exception e) {
+                log.error("Incident handling failed for alert {}: {}", name, e.toString());
+            }
         }
         return ResponseEntity.ok().build();
     }

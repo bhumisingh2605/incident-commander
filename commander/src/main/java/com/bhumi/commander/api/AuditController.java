@@ -20,7 +20,7 @@ public class AuditController {
     public List<Map<String, Object>> recent(@RequestParam(defaultValue = "20") int limit) {
         int n = Math.max(1, Math.min(limit, 200));
         return jdbc.sql("""
-                SELECT id, tool_name, args, status, duration_ms, created_at,
+                SELECT id, run_id, tool_name, args, status, duration_ms, created_at,
                        left(result_summary, 200) AS result
                 FROM tool_calls ORDER BY id DESC LIMIT :n
                 """)
