@@ -1,4 +1,4 @@
-package com.bhumi.payment_service.chaos;
+package com.bhumi.order_service.chaos;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -13,9 +13,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class ChaosFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(ChaosFilter.class);
-    private final com.bhumi.payment_service.chaos.ChaosState state;
+    private final ChaosState state;
 
-    public ChaosFilter(com.bhumi.payment_service.chaos.ChaosState state) { this.state = state; }
+    public ChaosFilter(ChaosState state) { this.state = state; }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {

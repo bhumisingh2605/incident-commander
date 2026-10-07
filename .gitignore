@@ -3,3 +3,6 @@
 target/
 .env
 *.log
+
+# Scenario runner raw outputs
+scenarios/runs/

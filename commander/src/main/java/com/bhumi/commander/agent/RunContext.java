@@ -3,7 +3,7 @@ package com.bhumi.commander.agent;
 /** Tracks the current agent run on this thread: its id and how many tool calls it has made. */
 public final class RunContext {
 
-    public static final int MAX_TOOL_CALLS = 8;
+    public static final int MAX_TOOL_CALLS = 10;
 
     private static final ThreadLocal<RunContext> CURRENT = new ThreadLocal<>();
 

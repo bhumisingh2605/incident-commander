@@ -1,6 +1,6 @@
-package com.bhumi.payment_service.controller;
+package com.bhumi.order_service.controller;
 
-import com.bhumi.payment_service.chaos.ChaosState;
+import com.bhumi.order_service.chaos.ChaosState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/chaos")
 public class ChaosController {
-
     private static final Logger log = LoggerFactory.getLogger(ChaosController.class);
     private final ChaosState state;
 
@@ -47,7 +46,9 @@ public class ChaosController {
         int threads = Runtime.getRuntime().availableProcessors();
         for (int i = 0; i < threads; i++) {
             Thread t = new Thread(() -> {
-                while (System.currentTimeMillis() < state.cpuUntil) Math.sqrt(Math.random());
+                while (System.currentTimeMillis() < state.cpuUntil) {
+                    double ignored = Math.sqrt(Math.random());
+                }
             });
             t.setDaemon(true);
             t.start();

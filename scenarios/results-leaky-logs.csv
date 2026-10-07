@@ -1,0 +1,5 @@
+"Time","Scenario","Model","PromptVersion","ExpectedService","PredictedService","Category","Confidence","ServiceCorrect","Correct","ToolCalls","Seconds"
+"2026-10-06 07:29","S1","qwen3:8b","v1","payment-service","payment-service","DEPENDENCY_FAILURE","0.8","True","False","5","204"
+"2026-10-06 07:35","S2","qwen3:8b","v1","payment-service","payment-service","DEPENDENCY_FAILURE","0.95","True","True","7","243"
+"2026-10-06 07:49","S3","qwen3:8b","v1","payment-service","order-service","APPLICATION_ERROR","0.7","False","False","5","205"
+"2026-10-06 08:22","S4","qwen3:8b","v1","order-service","order-service","APPLICATION_ERROR","0.9","True","True","5","216"
