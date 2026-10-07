@@ -50,10 +50,12 @@ public class FastAnalyst {
     }
 
     public AnalystAgent.Result analyze(String alertText) {
-        String runId = UUID.randomUUID().toString().substring(0, 8);
+        return analyze(UUID.randomUUID().toString().substring(0, 8), alertText);
+    }
+
+    public AnalystAgent.Result analyze(String runId, String alertText) {
         RunContext ctx = RunContext.start(runId);
         long start = System.nanoTime();
-
         try {
             log.info("Fast analyst run {} started for alert: {}", runId, alertText);
 
