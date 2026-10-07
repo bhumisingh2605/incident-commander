@@ -100,7 +100,9 @@ public class Verifier implements DisposableBean {
             }
         }
         if (!sawTraffic) notes.append("health checks only, no traffic to measure");
-        return new Check(true, notes.toString().trim());
+        String summary = notes.toString().trim();
+        if (summary.endsWith(";")) summary = summary.substring(0, summary.length() - 1);
+        return new Check(true, summary);
     }
 
     private void finish(long incidentId, boolean ok, String note) {

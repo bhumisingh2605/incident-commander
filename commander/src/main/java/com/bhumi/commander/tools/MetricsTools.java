@@ -24,7 +24,7 @@ public class MetricsTools {
 
     private static final Map<String, String> QUERIES = Map.of(
             "error_rate",
-            "sum(rate(http_server_requests_seconds_count{" + HTTP + ",status=~\"5..\"}[1m]))"
+            "(sum(rate(http_server_requests_seconds_count{" + HTTP + ",status=~\"5..\"}[1m])) or vector(0))"
                     + " / sum(rate(http_server_requests_seconds_count{" + HTTP + "}[1m]))",
             "request_rate",
             "sum(rate(http_server_requests_seconds_count{" + HTTP + "}[1m]))",
