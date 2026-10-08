@@ -8,6 +8,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+if (-not $env:COMMANDER_OPERATOR_PASSWORD) { Write-Host "Set COMMANDER_OPERATOR_PASSWORD first (run: . .\.env.ps1)"; exit 1 }
+$AuthHeader = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("operator:" + $env:COMMANDER_OPERATOR_PASSWORD)) }
 $root       = Split-Path -Parent $PSScriptRoot
 $orderUrl   = "http://localhost:8081"
 $paymentUrl = "http://localhost:8082"
@@ -79,7 +81,7 @@ if (-not $scenarios.ContainsKey($Id)) {
 
 $sc = $scenarios[$Id]
 
-try { Invoke-WebRequest -Method Post -Uri "$Commander/debug/$Endpoint" -UseBasicParsing -TimeoutSec 10 | Out-Null }
+try { Invoke-WebRequest -Method Post -Headers $AuthHeader -Uri "$Commander/debug/$Endpoint" -UseBasicParsing -TimeoutSec 10 | Out-Null }
 catch {
     $code = 0
     if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }

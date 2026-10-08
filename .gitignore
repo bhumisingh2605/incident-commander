@@ -6,3 +6,5 @@ target/
 
 # Scenario runner raw outputs
 scenarios/runs/
+.env.ps1
+infra/alertmanager/webhook_password

@@ -52,6 +52,6 @@ services:
       - "9093:9093"
     volumes:
       - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-
+      - ./infra/alertmanager/webhook_password:/etc/alertmanager/webhook_password:ro
 volumes:
   pgdata:
