@@ -8,8 +8,20 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-if (-not $env:COMMANDER_OPERATOR_PASSWORD) { Write-Host "Set COMMANDER_OPERATOR_PASSWORD first (run: . .\.env.ps1)"; exit 1 }
-$AuthHeader = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("operator:" + $env:COMMANDER_OPERATOR_PASSWORD)) }
+
+if (-not $env:COMMANDER_OPERATOR_PASSWORD) {
+    Write-Host "Set COMMANDER_OPERATOR_PASSWORD first (run: . .\.env.ps1)"
+    exit 1
+}
+
+$AuthHeader = @{
+    Authorization = "Basic " + [Convert]::ToBase64String(
+        [Text.Encoding]::ASCII.GetBytes(
+            "operator:" + $env:COMMANDER_OPERATOR_PASSWORD
+        )
+    )
+}
+
 $root       = Split-Path -Parent $PSScriptRoot
 $orderUrl   = "http://localhost:8081"
 $paymentUrl = "http://localhost:8082"
@@ -72,20 +84,63 @@ $scenarios = @{
         Service = "unknown"
         Categories = @("UNKNOWN")
     }
+
+    "S9" = @{
+        Name = "order-service slow, payment healthy"
+        Alert = "HighLatencyP95 firing on order-service: p95 latency above 1s on order-service"
+        Service = "order-service"
+        Categories = @("SLOW_DEPENDENCY", "APPLICATION_ERROR")
+    }
+
+    "S10" = @{
+        Name = "order-service memory leak"
+        Alert = "HighHeapUsage firing on order-service: heap above 100 MB on order-service"
+        Service = "order-service"
+        Categories = @("RESOURCE_EXHAUSTION")
+    }
+
+    "S11" = @{
+        Name = "order-service deploy, then order errors"
+        Alert = $orderAlert
+        Service = "order-service"
+        Categories = @("BAD_DEPLOY", "APPLICATION_ERROR")
+    }
+
+    "S12" = @{
+        Name = "latency false alarm, system healthy"
+        Alert = "HighLatencyP95 firing on order-service: p95 latency above 1s on order-service"
+        Service = "unknown"
+        Categories = @("UNKNOWN")
+    }
 }
 
 if (-not $scenarios.ContainsKey($Id)) {
-    Write-Host "Unknown scenario '$Id'. Use S1 to S8."
+    Write-Host "Unknown scenario '$Id'. Use S1 to S12."
     exit 1
 }
 
 $sc = $scenarios[$Id]
 
-try { Invoke-WebRequest -Method Post -Headers $AuthHeader -Uri "$Commander/debug/$Endpoint" -UseBasicParsing -TimeoutSec 10 | Out-Null }
+# Check that the configured analysis endpoint exists.
+try {
+    Invoke-WebRequest `
+        -Method Post `
+        -Headers $AuthHeader `
+        -Uri "$Commander/debug/$Endpoint" `
+        -UseBasicParsing `
+        -TimeoutSec 10 | Out-Null
+}
 catch {
     $code = 0
-    if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
-    if ($code -eq 404 -or $code -eq 0) { Write-Host "Endpoint /debug/$Endpoint not found on $Commander (status $code). Restart the commander first."; exit 1 }
+
+    if ($_.Exception.Response) {
+        $code = [int]$_.Exception.Response.StatusCode
+    }
+
+    if ($code -eq 404 -or $code -eq 0) {
+        Write-Host "Endpoint /debug/$Endpoint not found on $Commander (status $code). Restart the commander first."
+        exit 1
+    }
 }
 
 function Send-Orders([int]$Count, [int]$DelayMs) {
@@ -124,17 +179,19 @@ function Reset-Chaos {
 
 function Deploy([string]$service, [string]$version, [string]$notes) {
     $body = @{
-        service   = $service
-        version   = $version
+        service    = $service
+        version    = $version
         deployedBy = "scenario"
-        notes     = $notes
+        notes      = $notes
     } | ConvertTo-Json
 
     Invoke-RestMethod `
         -Method Post `
         -Uri "$Commander/api/deployments" `
+        -Headers $AuthHeader `
         -ContentType "application/json" `
-        -Body $body | Out-Null
+        -Body $body `
+        -TimeoutSec 30 | Out-Null
 }
 
 function Wait-Healthy {
@@ -166,18 +223,36 @@ function Wait-Healthy {
 
 Write-Host "[$Id] $($sc.Name)"
 
-# Fresh containers (fresh logs) and no deploys left over from earlier runs
+# Recreate application containers for a fresh scenario.
 Push-Location $root
 
-   docker compose up -d --force-recreate order-service payment-service prometheus | Out-Null
-
-Pop-Location
+try {
+    docker compose up -d --force-recreate order-service payment-service prometheus |
+        Out-Null
+}
+finally {
+    Pop-Location
+}
 
 Wait-Healthy
-   for ($i = 0; $i -lt 30; $i++) {
-       try { Invoke-RestMethod "http://localhost:9090/-/ready" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Seconds 1 }
-   }
 
+$prometheusReady = $false
+for ($i = 0; $i -lt 30 -and -not $prometheusReady; $i++) {
+    try {
+        Invoke-RestMethod `
+            "http://localhost:9090/-/ready" `
+            -TimeoutSec 2 | Out-Null
+
+        $prometheusReady = $true
+    }
+    catch {
+        Start-Sleep -Seconds 1
+    }
+}
+
+if (-not $prometheusReady) { throw "Prometheus did not become ready; scenario aborted." }
+
+# Clear deployment history for this scenario.
 docker exec commander-db psql `
     -U commander `
     -d commander `
@@ -189,7 +264,6 @@ Send-Orders 60 500
 Write-Host "Applying fault..."
 
 switch ($Id) {
-
     "S1" {
         Deploy "payment-service" "v2.0.0" "scenario S1"
 
@@ -235,18 +309,42 @@ switch ($Id) {
     }
 
     "S8" {
+        # False alarm: do not inject a fault.
+    }
+
+    "S9" {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri "$orderUrl/chaos/slow?ms=3000" | Out-Null
+    }
+
+    "S10" {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri "$orderUrl/chaos/memory-leak?mb=120" | Out-Null
+    }
+
+    "S11" {
+        Deploy "order-service" "v4.0.0" "scenario S11"
+
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri "$orderUrl/chaos/error?enabled=true" | Out-Null
+    }
+
+    "S12" {
+        # Latency false alarm: do not inject a fault.
     }
 }
 
 Write-Host "Traffic under fault (30 s)..."
 Send-Orders 60 500
 
-# Steady background traffic while the agent investigates
+# Continue background traffic while the analyst investigates.
 $job = Start-Job -ScriptBlock {
     param($url, $body)
 
     1..1200 | ForEach-Object {
-
         try {
             Invoke-RestMethod `
                 -Method Post `
@@ -259,83 +357,78 @@ $job = Start-Job -ScriptBlock {
 
         Start-Sleep -Seconds 1
     }
-
 } -ArgumentList $orderUrl, $orderJson
 
 Write-Host "Running the analyst (this takes a few minutes)..."
 
 $alertEnc = [uri]::EscapeDataString($sc.Alert)
-
 $sw = [Diagnostics.Stopwatch]::StartNew()
-
 $r = $null
 
 try {
+    # FIX: Include the operator's Basic Authentication header.
     $r = Invoke-RestMethod `
-        "$Commander/debug/${Endpoint}?alert=$alertEnc" `
+        -Uri "$Commander/debug/${Endpoint}?alert=$alertEnc" `
+        -Headers $AuthHeader `
+        -Method Get `
         -TimeoutSec 1800
 }
 catch {
     Write-Host "Analyze failed: $($_.Exception.Message)"
 }
+finally {
+    $sw.Stop()
 
-$sw.Stop()
+    # Stop background traffic and reset injected faults.
+    if ($null -ne $job) {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+    }
 
-# Cleanup
-Stop-Job $job -ErrorAction SilentlyContinue
-Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Reset-Chaos
 
-Reset-Chaos
-
-if ($Id -eq "S5") {
-    docker start payment-service | Out-Null
+    if ($Id -eq "S5") {
+        docker start payment-service | Out-Null
+    }
 }
 
-# Score
+# Score the result.
 $correct = $false
 $service = "-"
 $category = "-"
 $conf = 0
 
 if ($null -ne $r) {
-
     $rc = $r.rootCause
 
     $service = $rc.suspectedService
     $category = $rc.category
     $conf = $rc.confidence
 
-    if ($Id -eq "S8") {
-
-        $correct = ($service -eq "unknown") -or ($conf -lt 0.5)
-
+    if ($Id -eq "S8" -or $Id -eq "S12") {
+        $correct = ($service -eq "unknown")
     }
     else {
-
         $correct = `
             ($service -eq $sc.Service) -and `
             ($sc.Categories -contains $category)
     }
 }
 
-# Save scenario result
+# Save the scenario result to CSV.
 $row = [pscustomobject]@{
-    Time = (Get-Date -Format "yyyy-MM-dd HH:mm")
-    Scenario = $Id
-    Model = $Model
-    PromptVersion = $PromptVersion
-
-    ExpectedService = $sc.Service
+    Time             = (Get-Date -Format "yyyy-MM-dd HH:mm")
+    Scenario         = $Id
+    Model            = $Model
+    PromptVersion     = $PromptVersion
+    ExpectedService  = $sc.Service
     PredictedService = $service
-    Category = $category
-
-    Confidence = $conf
-
-    ServiceCorrect = ($service -eq $sc.Service)
-    Correct = $correct
-
-    ToolCalls = $r.toolCalls
-    Seconds = [int]$sw.Elapsed.TotalSeconds
+    Category         = $category
+    Confidence       = $conf
+    ServiceCorrect   = ($service -eq $sc.Service)
+    Correct          = $correct
+    ToolCalls        = if ($null -ne $r) { $r.toolCalls } else { $null }
+    Seconds          = [int]$sw.Elapsed.TotalSeconds
 }
 
 $row | Export-Csv `
@@ -343,7 +436,7 @@ $row | Export-Csv `
     -Append `
     -NoTypeInformation
 
-# Save raw agent result
+# Save the raw analyst result.
 $runsDir = Join-Path $PSScriptRoot "runs"
 
 New-Item `
@@ -365,8 +458,6 @@ if ($null -ne $r) {
 }
 
 if ($CooldownSeconds -gt 0) {
-
     Write-Host "Cooling down $CooldownSeconds s so this scenario's data leaves the metrics window..."
-
     Start-Sleep -Seconds $CooldownSeconds
 }

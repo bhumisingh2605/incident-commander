@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+    <title>Incident Commander</title>
+    <style>
+        :root { --bg:#f6f7f9; --card:#fff; --text:#1c2330; --muted:#667085; --line:#e3e6eb; --accent:#2b5fd9; }
+        @media (prefers-color-scheme: dark) {
+          :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#9aa4b2; --line:#2b3240; --accent:#6d96ff; }
+        }
+        * { box-sizing: border-box; }
+        body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+        header { display:flex; gap:16px; align-items:baseline; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+        header h1 { font-size:17px; margin:0; }
+        .muted { color:var(--muted); } .small { font-size:12px; }
+        main { padding:16px 20px; display:grid; gap:16px; }
+        .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+        .cols { display:grid; grid-template-columns:minmax(320px,1fr) minmax(360px,1.4fr); gap:16px; align-items:start; }
+        @media (max-width:900px) { .cols { grid-template-columns:1fr; } }
+        h2 { font-size:15px; margin:0 0 8px; } h3 { font-size:13px; margin:14px 0 4px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+        table { width:100%; border-collapse:collapse; }
+        th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+        tbody tr { cursor:pointer; } tbody tr:hover, tr.sel { background:rgba(43,95,217,.10); }
+        .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; background:var(--line); }
+        .st-ok { background:#d6f5df; color:#14532d; } .st-bad { background:#fddcdc; color:#7f1d1d; }
+        .st-warn { background:#fdebc8; color:#7a4a05; } .st-work { background:#dbe7ff; color:#1e3a8a; } .st-info { background:#e8e0fb; color:#4c1d95; }
+        .prop { padding:8px 0; border-bottom:1px solid var(--line); }
+        .btn { margin-left:8px; padding:2px 10px; border-radius:5px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
+        .btn.ok { border-color:#2f9e5b; color:#2f9e5b; } .btn.bad { border-color:#d14343; color:#d14343; }
+        ul { margin:4px 0 0; padding-left:18px; } details { margin-top:6px; }
+        #msg { padding:8px 12px; border-radius:6px; background:#dbe7ff; color:#1e3a8a; display:none; }
+        #msg.err { background:#fddcdc; color:#7f1d1d; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Incident Commander</h1>
+    <span id="who" class="muted"></span>
+    <span id="updated" class="muted small"></span>
+</header>
+<main>
+    <div id="msg"></div>
+    <section class="card">
+        <h2>Pending approvals</h2>
+        <div id="pending-list"></div>
+    </section>
+    <section class="cols">
+        <div class="card">
+            <h2>Incidents</h2>
+            <table>
+                <thead><tr><th>#</th><th>Title</th><th>Status</th><th>Cause</th><th>Conf.</th><th>Created</th></tr></thead>
+                <tbody id="incidents"></tbody>
+            </table>
+        </div>
+        <div class="card" id="detail"><p class="muted">Select an incident.</p></div>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

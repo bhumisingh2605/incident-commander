@@ -1,3 +1,4 @@
+
 package com.bhumi.commander.remediation;
 
 import com.bhumi.commander.tools.HealthTools;
@@ -19,28 +20,39 @@ public class Verifier implements DisposableBean {
 
     private record Check(boolean passed, String note) {}
 
-    private static final Logger log = LoggerFactory.getLogger(Verifier.class);
+    private static final Logger log =
+            LoggerFactory.getLogger(Verifier.class);
+
     private static final double MAX_ERROR_RATE = 0.05;
     private static final int[] DELAY_SECONDS = {90, 45, 45};
 
     private final JdbcClient jdbc;
     private final HealthTools health;
     private final ErrorRateProbe probe;
+    private final VerificationResultService resultService;
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "verifier");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ScheduledExecutorService scheduler =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "verifier");
+                t.setDaemon(true);
+                return t;
+            });
 
-    public Verifier(JdbcClient jdbc, HealthTools health, ErrorRateProbe probe) {
+    public Verifier(
+            JdbcClient jdbc,
+            HealthTools health,
+            ErrorRateProbe probe,
+            VerificationResultService resultService) {
         this.jdbc = jdbc;
         this.health = health;
         this.probe = probe;
+        this.resultService = resultService;
     }
 
     @Override
-    public void destroy() { scheduler.shutdownNow(); }
+    public void destroy() {
+        scheduler.shutdownNow();
+    }
 
     /** Called right after an approved action ran. */
     public void scheduleVerification(long incidentId, String targetService) {
@@ -48,25 +60,45 @@ public class Verifier implements DisposableBean {
     }
 
     private void schedule(long incidentId, String target, int attempt) {
-        scheduler.schedule(() -> run(incidentId, target, attempt), DELAY_SECONDS[attempt], TimeUnit.SECONDS);
+        scheduler.schedule(
+                () -> run(incidentId, target, attempt),
+                DELAY_SECONDS[attempt],
+                TimeUnit.SECONDS
+        );
     }
 
     private void run(long incidentId, String target, int attempt) {
         try {
             Check c = check(incidentId, target);
+
             if (c.passed()) {
-                finish(incidentId, true, "Verified after attempt " + (attempt + 1) + ": " + c.note());
+                finish(
+                        incidentId,
+                        true,
+                        "Verified after attempt " + (attempt + 1) + ": " + c.note()
+                );
                 return;
             }
+
             if (attempt + 1 < DELAY_SECONDS.length) {
-                log.info("Verification attempt {} failed for incident {}: {}; retrying",
-                        attempt + 1, incidentId, c.note());
+                log.info(
+                        "Verification attempt {} failed for incident {}: {}; retrying",
+                        attempt + 1,
+                        incidentId,
+                        c.note()
+                );
                 schedule(incidentId, target, attempt + 1);
                 return;
             }
+
             finish(incidentId, false, "Verification failed: " + c.note());
+
         } catch (Exception e) {
-            log.error("Verification error for incident {}: {}", incidentId, e.toString());
+            log.error(
+                    "Verification error for incident {}: {}",
+                    incidentId,
+                    e.toString()
+            );
             finish(incidentId, false, "Verification error: " + e);
         }
     }
@@ -74,50 +106,83 @@ public class Verifier implements DisposableBean {
     private Check check(long incidentId, String target) {
         Set<String> toCheck = new LinkedHashSet<>();
         toCheck.add(target);
-        List<String> incidentService = jdbc.sql("SELECT service FROM incidents WHERE id = :i")
-                .param("i", incidentId).query(String.class).list();
+
+        List<String> incidentService = jdbc.sql(
+                        "SELECT service FROM incidents WHERE id = :i"
+                )
+                .param("i", incidentId)
+                .query(String.class)
+                .list();
+
         if (!incidentService.isEmpty() && incidentService.get(0) != null) {
             toCheck.add(incidentService.get(0));
         }
 
         StringBuilder notes = new StringBuilder();
         boolean sawTraffic = false;
-        for (String s : toCheck) {
-            String h = health.getServiceHealth(s);
-            if (!h.contains("health: UP")) return new Check(false, h);
 
-            OptionalDouble rate = probe.errorRate(s);
+        for (String service : toCheck) {
+            String healthResult = health.getServiceHealth(service);
+
+            if (!healthResult.contains("health: UP")) {
+                return new Check(false, healthResult);
+            }
+
+            OptionalDouble rate = probe.errorRate(service);
+
             if (rate.isPresent()) {
                 sawTraffic = true;
+
                 double pct = rate.getAsDouble() * 100;
+
                 if (rate.getAsDouble() > MAX_ERROR_RATE) {
-                    return new Check(false, "%s error rate is %.1f%% (limit %.0f%%)"
-                            .formatted(s, pct, MAX_ERROR_RATE * 100));
+                    return new Check(
+                            false,
+                            "%s error rate is %.1f%% (limit %.0f%%)"
+                                    .formatted(
+                                            service,
+                                            pct,
+                                            MAX_ERROR_RATE * 100
+                                    )
+                    );
                 }
-                notes.append("%s up, error rate %.1f%%; ".formatted(s, pct));
+
+                notes.append(
+                        "%s up, error rate %.1f%%; "
+                                .formatted(service, pct)
+                );
+
             } else {
-                notes.append(s).append(" up, no recent traffic; ");
+                notes.append(service)
+                        .append(" up, no recent traffic; ");
             }
         }
-        if (!sawTraffic) notes.append("health checks only, no traffic to measure");
+
+        if (!sawTraffic) {
+            notes.append("health checks only, no traffic to measure");
+        }
+
         String summary = notes.toString().trim();
-        if (summary.endsWith(";")) summary = summary.substring(0, summary.length() - 1);
+
+        if (summary.endsWith(";")) {
+            summary = summary.substring(0, summary.length() - 1);
+        }
+
         return new Check(true, summary);
     }
 
     private void finish(long incidentId, boolean ok, String note) {
-        String text = note.length() > 1000 ? note.substring(0, 1000) : note;
-        jdbc.sql("UPDATE incidents SET verification = :v, verified_at = now(), updated_at = now() WHERE id = :i")
-                .param("v", text).param("i", incidentId).update();
+        String text = note.length() > 1000
+                ? note.substring(0, 1000)
+                : note;
 
-        // Status only changes while the incident is still open (a human or the alerts may have closed it).
-        if (ok) {
-            jdbc.sql("UPDATE incidents SET status = 'RESOLVED', resolved_at = now() WHERE id = :i AND resolved_at IS NULL")
-                    .param("i", incidentId).update();
-        } else {
-            jdbc.sql("UPDATE incidents SET status = 'ESCALATED' WHERE id = :i AND resolved_at IS NULL")
-                    .param("i", incidentId).update();
-        }
-        log.info("Incident {} verification {}: {}", incidentId, ok ? "PASSED" : "FAILED", text);
+        resultService.finish(incidentId, ok, text);
+
+        log.info(
+                "Incident {} verification {}: {}",
+                incidentId,
+                ok ? "PASSED" : "FAILED",
+                text
+        );
     }
 }

@@ -157,12 +157,26 @@ public class IncidentService implements DisposableBean {
                         .param("i", incidentId)
                         .update();
 
+
                 if (n > 0) {
+                    int cancelled = jdbc.sql("""
+            UPDATE action_proposals
+            SET status = 'CANCELLED',
+                result = 'Cancelled because the incident was resolved before approval'
+            WHERE incident_id = :i
+              AND status = 'PENDING'
+            """)
+                            .param("i", incidentId)
+                            .update();
+
                     log.info(
-                            "Incident {} resolved: all alerts cleared",
-                            incidentId
+                            "Incident {} resolved: all alerts cleared; cancelled {} pending proposals",
+                            incidentId,
+                            cancelled
                     );
                 }
+
+
             }
         }
     }

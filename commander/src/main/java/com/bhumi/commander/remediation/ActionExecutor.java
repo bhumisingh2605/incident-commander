@@ -1,5 +1,7 @@
-package com.bhumi.commander.remediation;
 
+        package com.bhumi.commander.remediation;
+
+import com.bhumi.commander.remediation.Verifier;
 import com.bhumi.commander.tools.ServiceRegistry;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -52,9 +54,14 @@ public class ActionExecutor {
 
         List<Map<String, Object>> rows =
                 jdbc.sql("""
-                        SELECT incident_id, action_type, target_service, status
-                        FROM action_proposals
-                        WHERE id = :id
+                        SELECT p.incident_id,
+                               p.action_type,
+                               p.target_service,
+                               p.status,
+                               i.resolved_at
+                        FROM action_proposals p
+                        JOIN incidents i ON i.id = p.incident_id
+                        WHERE p.id = :id
                         """)
                         .param("id", proposalId)
                         .query()
@@ -76,8 +83,16 @@ public class ActionExecutor {
         long incidentId =
                 ((Number) row.get("incident_id")).longValue();
 
-        if (!"APPROVED".equals(status)) {
+        // Do not execute a proposal for a resolved incident.
+        if (row.get("resolved_at") != null) {
+            return new Result(
+                    Outcome.NOT_APPROVED,
+                    "incident " + incidentId
+                            + " is already resolved; remediation is blocked"
+            );
+        }
 
+        if (!"APPROVED".equals(status)) {
             return new Result(
                     Outcome.NOT_APPROVED,
                     "proposal is " + status
@@ -85,8 +100,8 @@ public class ActionExecutor {
             );
         }
 
-        if (!ALLOWED.contains(type)
-                || !services.known(service)) {
+        // Only allow explicitly approved action types and known services.
+        if (!ALLOWED.contains(type) || !services.known(service)) {
 
             mark(
                     proposalId,
@@ -108,35 +123,61 @@ public class ActionExecutor {
         }
 
         if (cooldownActive(service)) {
-
             return new Result(
                     Outcome.COOLDOWN,
-                    service
-                            + " was acted on in the last "
+                    service + " was acted on in the last "
                             + COOLDOWN_MINUTES
                             + " minutes; try again later"
             );
         }
 
         /*
-         * Atomic claim:
-         * only one caller can move APPROVED -> EXECUTING.
+         * Atomic claim: only one caller can claim an approved proposal.
+         * The incident must also still be unresolved at claim time.
          */
         int claimed =
                 jdbc.sql("""
-                        UPDATE action_proposals
+                        UPDATE action_proposals p
                         SET status = 'EXECUTING'
-                        WHERE id = :id
-                          AND status = 'APPROVED'
+                        WHERE p.id = :id
+                          AND p.status = 'APPROVED'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM incidents i
+                              WHERE i.id = p.incident_id
+                                AND i.resolved_at IS NULL
+                          )
                         """)
                         .param("id", proposalId)
                         .update();
 
         if (claimed == 0) {
 
+            // Distinguish a resolved incident from a proposal
+            // that is no longer approved or is already executing.
+            List<Map<String, Object>> currentRows =
+                    jdbc.sql("""
+                            SELECT p.status, i.resolved_at
+                            FROM action_proposals p
+                            JOIN incidents i ON i.id = p.incident_id
+                            WHERE p.id = :id
+                            """)
+                            .param("id", proposalId)
+                            .query()
+                            .listOfRows();
+
+            if (!currentRows.isEmpty()
+                    && currentRows.get(0).get("resolved_at") != null) {
+                return new Result(
+                        Outcome.NOT_APPROVED,
+                        "incident " + incidentId
+                                + " is already resolved; remediation is blocked"
+                );
+            }
+
             return new Result(
                     Outcome.NOT_APPROVED,
-                    "proposal is already being executed"
+                    "proposal is no longer approved or is already being executed"
             );
         }
 
@@ -163,11 +204,7 @@ public class ActionExecutor {
                     .param("i", incidentId)
                     .update();
 
-            /*
-             * The action has completed successfully.
-             * Now schedule verification to check whether
-             * the incident actually recovered.
-             */
+            // Verify service health and error rate after remediation.
             verifier.scheduleVerification(
                     incidentId,
                     service
@@ -262,8 +299,8 @@ public class ActionExecutor {
     }
 
     /*
-     * The container name comes only from ServiceRegistry
-     * (checked above); the arguments are fixed.
+     * Container names come from ServiceRegistry.
+     * Process arguments are fixed.
      */
     private String restart(String container)
             throws IOException, InterruptedException {
@@ -293,7 +330,6 @@ public class ActionExecutor {
                 ).trim();
 
         if (p.exitValue() != 0) {
-
             throw new IOException(
                     "docker restart failed: " + out
             );
@@ -303,9 +339,8 @@ public class ActionExecutor {
     }
 
     /*
-     * Simulated:
-     * images are not versioned here, so this restarts
-     * and records the rollback.
+     * Simulated rollback:
+     * restart the service and record the previous deployment version.
      */
     private String rollback(String service)
             throws IOException, InterruptedException {
@@ -323,7 +358,6 @@ public class ActionExecutor {
                         .list();
 
         if (versions.size() < 2) {
-
             throw new IOException(
                     "no previous version recorded for "
                             + service
