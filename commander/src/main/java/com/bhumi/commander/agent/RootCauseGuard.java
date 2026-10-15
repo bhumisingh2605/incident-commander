@@ -1,10 +1,12 @@
 
-package com.bhumi.commander.agent;
+        package com.bhumi.commander.agent;
 
+import com.bhumi.commander.agent.RootCause;
 import com.bhumi.commander.tools.ServiceRegistry;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -21,14 +23,27 @@ public class RootCauseGuard {
     private static final int RECENT_DEPLOY_MINUTES = 30;
 
     private static final double HIGH_LATENCY_THRESHOLD_MS = 1000.0;
-    private static final double HEALTHY_LATENCY_THRESHOLD_MS = 100.0;
+    private static final double HEALTHY_LATENCY_THRESHOLD_MS = 1000.0;
     private static final double LOW_ERROR_RATE_THRESHOLD_PERCENT = 0.1;
 
     private static final Pattern CURRENT_METRIC_PATTERN =
-            Pattern.compile("current\\s+([0-9]+(?:\\.[0-9]+)?)");
+            Pattern.compile(
+                    "\\bcurrent\\s+([0-9]+(?:\\.[0-9]+)?)",
+                    Pattern.CASE_INSENSITIVE
+            );
 
     private static final Pattern ERROR_RATE_PATTERN =
-            Pattern.compile("current\\s+([0-9]+(?:\\.[0-9]+)?)\\s*%");
+            Pattern.compile(
+                    "\\bcurrent\\s+([0-9]+(?:\\.[0-9]+)?)\\s*%",
+                    Pattern.CASE_INSENSITIVE
+            );
+
+    private static final Pattern LATENCY_P95_PATTERN =
+            Pattern.compile(
+                    "latency_p95\\s*:\\s*(?:current\\s*)?"
+                            + "([0-9]+(?:\\.[0-9]+)?)\\s*(?:ms)?",
+                    Pattern.CASE_INSENSITIVE
+            );
 
     private final JdbcClient jdbc;
     private final ServiceRegistry services;
@@ -43,7 +58,6 @@ public class RootCauseGuard {
             String alertText,
             String evidenceText) {
 
-        // RULE 0: NULL MODEL RESPONSE
         if (rc == null) {
             return new RootCause(
                     "No diagnosis was produced",
@@ -59,7 +73,7 @@ public class RootCauseGuard {
 
         String evidence = evidenceText == null
                 ? ""
-                : evidenceText.toLowerCase();
+                : evidenceText.toLowerCase(Locale.ROOT);
 
         // RULE 1: FALSE ALARM
         if (isFalseAlarm(evidence, alertText)) {
@@ -67,23 +81,24 @@ public class RootCauseGuard {
                     new ArrayList<>(rc.evidence());
 
             updatedEvidence.add(
-                    "Guardrail: no active failure evidence detected; "
-                            + "classified as UNKNOWN"
+                    "Guardrail: available telemetry does not support "
+                            + "an active failure; classified as UNKNOWN"
             );
 
             log.info(
-                    "Guardrail changed {} -> UNKNOWN because evidence "
-                            + "indicates no active incident",
+                    "Guardrail changed {} -> UNKNOWN because telemetry "
+                            + "does not support the alert",
                     svc
             );
 
             return new RootCause(
-                    rc.summary(),
+                    "Alert is not supported by current telemetry; "
+                            + "no active failure confirmed.",
                     "unknown",
                     "UNKNOWN",
                     updatedEvidence,
                     Math.min(rc.confidence(), 0.3),
-                    rc.suggestedActions()
+                    List.of()
             );
         }
 
@@ -98,26 +113,9 @@ public class RootCauseGuard {
 
         String category = rc.category();
 
-        /*
-         * RULE 2: CORRECT A FALSE DOWNSTREAM LATENCY DIAGNOSIS
-         *
-         * Example:
-         * order-service -> payment-service
-         *
-         * If the model blames payment-service while order-service
-         * has high, rising latency and payment-service is healthy,
-         * prefer order-service as the suspected root cause.
-         *
-         * Do not override direct evidence of a failed dependency.
-         * This protects the S5 case.
-         */
-
-        
-
+        // RULE 2: CORRECT A FALSE DOWNSTREAM LATENCY DIAGNOSIS
         if (!isFailedUpstreamDependency(svc, evidence)) {
-
             for (String upstream : services.upstreamOf(svc)) {
-
                 if (hasHighRisingLatency(upstream, evidence)
                         && hasHealthyMetrics(svc, evidence)) {
 
@@ -129,7 +127,8 @@ public class RootCauseGuard {
                                     + svc + " to " + upstream
                                     + " because " + upstream
                                     + " has high, rising latency while "
-                                    + svc + " has healthy, stable metrics"
+                                    + svc
+                                    + " has healthy, stable metrics"
                     );
 
                     log.info(
@@ -151,14 +150,8 @@ public class RootCauseGuard {
             }
         }
 
-        /*
-         * RULE 3: DOWNSTREAM DEPENDENCY FAILURE
-         *
-         * If the suspected service is failing because a downstream
-         * dependency is unhealthy, identify that dependency.
-         */
+        // RULE 3: DOWNSTREAM DEPENDENCY FAILURE
         for (String downstream : services.downstreamOf(svc)) {
-
             if (downstreamFailureIsVisible(downstream, evidence)
                     && upstreamFailureIsVisible(svc, evidence)) {
 
@@ -169,7 +162,8 @@ public class RootCauseGuard {
                         "Guardrail: " + downstream
                                 + " is unhealthy/down while " + svc
                                 + " shows connection/I/O failures; "
-                                + downstream + " is the root-cause service"
+                                + downstream
+                                + " is the root-cause service"
                 );
 
                 log.info(
@@ -189,13 +183,8 @@ public class RootCauseGuard {
             }
         }
 
-        /*
-         * RULE 4: SERVICE-DOWN DEPENDENCY
-         *
-         * Protects the S5 case where payment-service is down and
-         * order-service reports failures pointing to payment-service.
-         */
-        if (category.equals("DEPENDENCY_FAILURE")
+        // RULE 4: SERVICE-DOWN DEPENDENCY
+        if ("DEPENDENCY_FAILURE".equals(category)
                 && isFailedUpstreamDependency(svc, evidence)) {
 
             List<String> updatedEvidence =
@@ -224,33 +213,24 @@ public class RootCauseGuard {
             );
         }
 
-        /*
-         * RULE 5: RECENT DEPLOYMENT
-         */
+        // RULE 5: RECENT DEPLOYMENT
         String corrected = category;
         String reason = null;
 
         if (hasRecentDeploy(svc)
-                && (category.equals("APPLICATION_ERROR")
-                || category.equals("DEPENDENCY_FAILURE"))) {
+                && ("APPLICATION_ERROR".equals(category)
+                || "DEPENDENCY_FAILURE".equals(category))) {
 
             corrected = "BAD_DEPLOY";
-
             reason = svc + " was deployed in the last "
                     + RECENT_DEPLOY_MINUTES + " minutes";
-        }
 
-        /*
-         * RULE 6: SERVICE WITH NO DOWNSTREAM
-         *
-         * A leaf service cannot have a failure caused by its own
-         * downstream dependency. Rule 4 runs first for S5.
-         */
-        else if (category.equals("DEPENDENCY_FAILURE")
+            // RULE 6: SERVICE WITH NO DOWNSTREAM
+        } else if ("DEPENDENCY_FAILURE".equals(category)
                 && services.downstreamOf(svc).isEmpty()) {
 
             corrected = alertText != null
-                    && alertText.toLowerCase().contains("latency")
+                    && alertText.toLowerCase(Locale.ROOT).contains("latency")
                     ? "SLOW_DEPENDENCY"
                     : "APPLICATION_ERROR";
 
@@ -259,7 +239,6 @@ public class RootCauseGuard {
                     + "cannot fail because of a dependency";
         }
 
-        // NO CHANGE REQUIRED
         if (corrected.equals(category)) {
             return rc;
         }
@@ -299,19 +278,16 @@ public class RootCauseGuard {
             String evidence) {
 
         for (String line : evidence.split("\\R")) {
-
-            if (!line.contains(service.toLowerCase())
+            if (!line.contains(service.toLowerCase(Locale.ROOT))
                     || !line.contains("latency_p95")
                     || !line.contains("trend: rising")) {
                 continue;
             }
 
-            Matcher matcher =
-                    CURRENT_METRIC_PATTERN.matcher(line);
+            Matcher matcher = CURRENT_METRIC_PATTERN.matcher(line);
 
             if (matcher.find()) {
-                double latency =
-                        Double.parseDouble(matcher.group(1));
+                double latency = Double.parseDouble(matcher.group(1));
 
                 if (latency >= HIGH_LATENCY_THRESHOLD_MS) {
                     return true;
@@ -333,38 +309,31 @@ public class RootCauseGuard {
         boolean lowErrors = false;
 
         for (String line : evidence.split("\\R")) {
-
-            if (!line.contains(service.toLowerCase())) {
+            if (!line.contains(service.toLowerCase(Locale.ROOT))) {
                 continue;
             }
 
             if (line.contains("latency_p95")
                     && line.contains("trend: stable")) {
 
-                Matcher matcher =
-                        CURRENT_METRIC_PATTERN.matcher(line);
+                Matcher matcher = CURRENT_METRIC_PATTERN.matcher(line);
 
                 if (matcher.find()) {
-                    double latency =
-                            Double.parseDouble(matcher.group(1));
-
+                    double latency = Double.parseDouble(matcher.group(1));
                     stableLatency =
                             latency <= HEALTHY_LATENCY_THRESHOLD_MS;
                 }
             }
 
             if (line.contains("error_rate")) {
-
-                Matcher matcher =
-                        ERROR_RATE_PATTERN.matcher(line);
+                Matcher matcher = ERROR_RATE_PATTERN.matcher(line);
 
                 if (matcher.find()) {
                     double errorRate =
                             Double.parseDouble(matcher.group(1));
 
                     lowErrors =
-                            errorRate
-                                    <= LOW_ERROR_RATE_THRESHOLD_PERCENT;
+                            errorRate <= LOW_ERROR_RATE_THRESHOLD_PERCENT;
                 }
             }
         }
@@ -373,14 +342,13 @@ public class RootCauseGuard {
     }
 
     /**
-     * Detect whether the suspected service is itself a failed
-     * dependency of another service.
+     * Detect whether the suspected service is itself a failed dependency.
      */
     private boolean isFailedUpstreamDependency(
             String service,
             String evidence) {
 
-        String target = service.toLowerCase().trim();
+        String target = service.toLowerCase(Locale.ROOT).trim();
 
         boolean callerPointsToService =
                 evidence.contains("errors pointing to " + target)
@@ -412,39 +380,25 @@ public class RootCauseGuard {
     }
 
     /**
-     * Detect a false alarm. Missing data alone does not prove
-     * that an incident is false.
+     * Detect explicit non-latency failure evidence.
+     * Metric names alone do not prove a failure.
      */
-    private boolean isFalseAlarm(
-            String evidence,
-            String alertText) {
-
-        String alert = alertText == null
-                ? ""
-                : alertText.toLowerCase();
+    private boolean hasExplicitOtherFailureEvidence(String evidence) {
 
         boolean activeHeapFailure =
                 evidence.contains("highheapusage")
                         || evidence.contains("high heap")
-                        || evidence.contains("heap_used_bytes")
-                        || evidence.contains("heap usage")
                         || evidence.contains("heap above")
                         || evidence.contains("heap reached")
                         || evidence.contains("heap is rising")
                         || evidence.contains("heap rising")
-                        || evidence.contains("memory usage")
                         || evidence.contains("outofmemory");
 
         boolean activeCpuFailure =
                 evidence.contains("high cpu")
-                        || evidence.contains("cpu usage")
                         || evidence.contains("cpu above")
                         || evidence.contains("cpu exhausted")
                         || evidence.contains("cpu exhaustion");
-
-        boolean activeErrorFailure =
-                evidence.contains("error rate")
-                        && !evidence.contains("no error rate");
 
         boolean activeServiceFailure =
                 evidence.contains("service down")
@@ -454,12 +408,151 @@ public class RootCauseGuard {
                         || evidence.contains("connection refused")
                         || evidence.contains("failed to connect")
                         || evidence.contains("unable to connect")
-                        || evidence.contains("resourceaccessexception");
+                        || evidence.contains("resourceaccessexception")
+                        || evidence.contains("not running")
+                        || evidence.contains("health=down")
+                        || evidence.contains("status=down");
+
+        return activeHeapFailure
+                || activeCpuFailure
+                || activeServiceFailure
+                || hasHighErrorRate(evidence);
+    }
+
+    /**
+     * Detect a measured error rate above the configured healthy limit.
+     */
+    private boolean hasHighErrorRate(String evidence) {
+
+        for (String line : evidence.split("\\R")) {
+            if (!line.contains("error_rate")
+                    && !line.contains("error rate")) {
+                continue;
+            }
+
+            Matcher matcher = ERROR_RATE_PATTERN.matcher(line);
+
+            if (matcher.find()) {
+                double errorRate = Double.parseDouble(matcher.group(1));
+
+                if (errorRate > LOW_ERROR_RATE_THRESHOLD_PERCENT) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Return true only when latency measurements exist and every
+     * reported p95 value is below the configured alert threshold.
+     */
+    private boolean hasOnlyHealthyLatencyMetrics(String evidence) {
+
+        boolean foundLatencyMetric = false;
+
+        for (String line : evidence.split("\\R")) {
+            if (!line.contains("latency_p95")) {
+                continue;
+            }
+
+            Matcher matcher = LATENCY_P95_PATTERN.matcher(line);
+
+            if (!matcher.find()) {
+                // A reported metric we cannot parse is not proof of health.
+                return false;
+            }
+
+            double latency = Double.parseDouble(matcher.group(1));
+            foundLatencyMetric = true;
+
+            if (latency >= HEALTHY_LATENCY_THRESHOLD_MS) {
+                return false;
+            }
+        }
+
+        return foundLatencyMetric;
+    }
+
+    /**
+     * Detect a false alarm.
+     * Missing data alone does not prove an incident is false.
+     */
+    private boolean isFalseAlarm(
+            String evidence,
+            String alertText) {
+
+        String normalizedEvidence = evidence == null
+                ? ""
+                : evidence.toLowerCase(Locale.ROOT);
+
+        String alert = alertText == null
+                ? ""
+                : alertText.toLowerCase(Locale.ROOT);
+
+        // RULE A: LATENCY ALERT WITH HEALTHY MEASUREMENTS
+        boolean latencyAlert = alert.contains("latency");
+
+        boolean otherFailure =
+                hasExplicitOtherFailureEvidence(normalizedEvidence);
+
+        boolean healthyLatency =
+                hasOnlyHealthyLatencyMetrics(normalizedEvidence);
+
+        log.info(
+                "False-alarm diagnostic: latencyAlert={}, "
+                        + "otherFailure={}, healthyLatency={}, alert={}",
+                latencyAlert,
+                otherFailure,
+                healthyLatency,
+                alert
+        );
+
+        if (latencyAlert && !otherFailure && healthyLatency) {
+            log.info(
+                    "Latency alert classified as unsupported: "
+                            + "reported p95 metrics are below {} ms",
+                    HEALTHY_LATENCY_THRESHOLD_MS
+            );
+
+            return true;
+        }
+
+        boolean activeHeapFailure =
+                normalizedEvidence.contains("highheapusage")
+                        || normalizedEvidence.contains("high heap")
+                        || normalizedEvidence.contains("heap above")
+                        || normalizedEvidence.contains("heap reached")
+                        || normalizedEvidence.contains("heap is rising")
+                        || normalizedEvidence.contains("heap rising")
+                        || normalizedEvidence.contains("outofmemory");
+
+        boolean activeCpuFailure =
+                normalizedEvidence.contains("high cpu")
+                        || normalizedEvidence.contains("cpu above")
+                        || normalizedEvidence.contains("cpu exhausted")
+                        || normalizedEvidence.contains("cpu exhaustion");
+
+        boolean activeErrorFailure =
+                hasHighErrorRate(normalizedEvidence)
+                        || (normalizedEvidence.contains("error rate")
+                        && !normalizedEvidence.contains("no error rate"));
+
+        boolean activeServiceFailure =
+                normalizedEvidence.contains("service down")
+                        || normalizedEvidence.contains("service is down")
+                        || normalizedEvidence.contains("unhealthy")
+                        || normalizedEvidence.contains("unreachable")
+                        || normalizedEvidence.contains("connection refused")
+                        || normalizedEvidence.contains("failed to connect")
+                        || normalizedEvidence.contains("unable to connect")
+                        || normalizedEvidence.contains("resourceaccessexception");
 
         boolean activeAlert =
-                evidence.contains("alert fired")
-                        || evidence.contains("alert firing")
-                        || evidence.contains("firing for");
+                normalizedEvidence.contains("alert fired")
+                        || normalizedEvidence.contains("alert firing")
+                        || normalizedEvidence.contains("firing for");
 
         boolean activeFailure =
                 activeHeapFailure
@@ -482,27 +575,27 @@ public class RootCauseGuard {
         }
 
         boolean noErrors =
-                evidence.contains("no error")
-                        || evidence.contains("no errors")
-                        || evidence.contains("no warn")
-                        || evidence.contains("no warning")
-                        || evidence.contains("no logs")
-                        || evidence.contains("no error/warn")
-                        || evidence.contains("no error or warn");
+                normalizedEvidence.contains("no error")
+                        || normalizedEvidence.contains("no errors")
+                        || normalizedEvidence.contains("no warn")
+                        || normalizedEvidence.contains("no warning")
+                        || normalizedEvidence.contains("no logs")
+                        || normalizedEvidence.contains("no error/warn")
+                        || normalizedEvidence.contains("no error or warn");
 
-        boolean noData = evidence.contains("no data");
+        boolean noData = normalizedEvidence.contains("no data");
 
         boolean falling =
-                evidence.contains("falling")
-                        || evidence.contains("decreasing")
-                        || evidence.contains("declining");
+                normalizedEvidence.contains("falling")
+                        || normalizedEvidence.contains("decreasing")
+                        || normalizedEvidence.contains("declining");
 
         boolean healthy =
-                evidence.contains("health=up")
-                        || evidence.contains("status=up")
-                        || evidence.contains("healthy")
-                        || evidence.contains("\"status\":\"up\"")
-                        || evidence.contains("marked as up");
+                normalizedEvidence.contains("health=up")
+                        || normalizedEvidence.contains("status=up")
+                        || normalizedEvidence.contains("healthy")
+                        || normalizedEvidence.contains("\"status\":\"up\"")
+                        || normalizedEvidence.contains("marked as up");
 
         // Existing S8 false-alarm rule.
         if (noErrors && noData) {
@@ -519,7 +612,7 @@ public class RootCauseGuard {
             String downstream,
             String evidence) {
 
-        String service = downstream.toLowerCase();
+        String service = downstream.toLowerCase(Locale.ROOT);
 
         boolean mentionsService = evidence.contains(service);
 
@@ -542,7 +635,7 @@ public class RootCauseGuard {
             String upstream,
             String evidence) {
 
-        String service = upstream.toLowerCase();
+        String service = upstream.toLowerCase(Locale.ROOT);
 
         boolean mentionsService = evidence.contains(service);
 
@@ -557,24 +650,6 @@ public class RootCauseGuard {
                         || evidence.contains("unable to connect");
 
         return mentionsService && dependencyError;
-    }
-
-    /**
-     * Check whether the evidence explicitly points to this service
-     * as the failing dependency.
-     */
-    private boolean callerErrorsPointToService(
-            String service,
-            String evidence) {
-
-        String target = service.toLowerCase().trim();
-
-        return evidence.contains("errors pointing to " + target)
-                || evidence.contains("error pointing to " + target)
-                || evidence.contains("failed calls to " + target)
-                || evidence.contains("failed call to " + target)
-                || evidence.contains("calling " + target)
-                || evidence.contains("calls to " + target);
     }
 
     /**
