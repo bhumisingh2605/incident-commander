@@ -29,8 +29,7 @@ public class IncidentService implements DisposableBean {
     private final ServiceRegistry services;
     private final ProposalService proposals;
 
-    // One agent run at a time:
-    // the local model cannot serve parallel investigations reliably.
+    // Run one local-model investigation at a time.
     private final ExecutorService worker =
             Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "analyst-worker");
@@ -55,7 +54,9 @@ public class IncidentService implements DisposableBean {
         worker.shutdownNow();
     }
 
-    /** Called for every firing alert, after the alert row has been saved. */
+    /**
+     * Called for every firing alert after its alert row has been saved.
+     */
     public void onAlertFiring(
             String fingerprint,
             String alertname,
@@ -108,7 +109,6 @@ public class IncidentService implements DisposableBean {
                 .update();
 
         if (created) {
-
             startInvestigation(
                     incidentId,
                     "%s firing on %s: %s"
@@ -117,8 +117,8 @@ public class IncidentService implements DisposableBean {
         }
     }
 
-    /** Called for every resolved alert.
-     * The incident resolves when none of its alerts are still firing.
+    /**
+     * An incident resolves when none of its linked alerts are firing.
      */
     public void onAlertResolved(String fingerprint) {
 
@@ -146,7 +146,7 @@ public class IncidentService implements DisposableBean {
 
             if (stillFiring == 0) {
 
-                int n = jdbc.sql("""
+                int updated = jdbc.sql("""
                         UPDATE incidents
                         SET status = 'RESOLVED',
                             resolved_at = now(),
@@ -157,15 +157,15 @@ public class IncidentService implements DisposableBean {
                         .param("i", incidentId)
                         .update();
 
+                if (updated > 0) {
 
-                if (n > 0) {
                     int cancelled = jdbc.sql("""
-            UPDATE action_proposals
-            SET status = 'CANCELLED',
-                result = 'Cancelled because the incident was resolved before approval'
-            WHERE incident_id = :i
-              AND status = 'PENDING'
-            """)
+                            UPDATE action_proposals
+                            SET status = 'CANCELLED',
+                                result = 'Cancelled because the incident was resolved before approval'
+                            WHERE incident_id = :i
+                              AND status = 'PENDING'
+                            """)
                             .param("i", incidentId)
                             .update();
 
@@ -175,14 +175,13 @@ public class IncidentService implements DisposableBean {
                             cancelled
                     );
                 }
-
-
             }
         }
     }
 
-    /** Manual re-run.
-     * Returns false when the incident does not exist.
+    /**
+     * Manually reruns an investigation.
+     * Returns false when the incident does not exist or is resolved.
      */
     public boolean reinvestigate(long incidentId) {
 
@@ -190,6 +189,7 @@ public class IncidentService implements DisposableBean {
                 SELECT title
                 FROM incidents
                 WHERE id = :i
+                  AND resolved_at IS NULL
                 """)
                 .param("i", incidentId)
                 .query(String.class)
@@ -211,10 +211,9 @@ public class IncidentService implements DisposableBean {
             long incidentId,
             String alertText) {
 
-        String runId =
-                UUID.randomUUID()
-                        .toString()
-                        .substring(0, 8);
+        String runId = UUID.randomUUID()
+                .toString()
+                .substring(0, 8);
 
         jdbc.sql("""
                 INSERT INTO agent_runs
@@ -254,68 +253,72 @@ public class IncidentService implements DisposableBean {
         try {
 
             /*
-             * FastAnalyst is now used instead of AnalystAgent
-             * for the actual investigation.
-             *
-             * It collects the evidence in Java and performs
-             * one LLM conclusion call.
+             * Gather evidence and obtain the root-cause analysis.
              */
             AnalystAgent.Result result =
                     analyst.analyze(runId, alertText);
 
             RootCause rc = result.rootCause();
 
+            if (rc == null) {
+                throw new IllegalStateException(
+                        "Analyst returned no root-cause result"
+                );
+            }
+
             /*
-             * First save the RCA diagnosis.
+             * Update only incidents that are still unresolved.
+             * A resolved incident must not receive a late RCA update.
              */
-            jdbc.sql("""
+            int updated = jdbc.sql("""
                     UPDATE incidents SET
-                      rc_summary = :sum,
-                      rc_service = :svc,
-                      rc_category = :cat,
-                      rc_confidence = :conf,
-                      rc_evidence = :ev,
-                      rc_actions = :act,
-                      status = CASE
-                          WHEN status = 'INVESTIGATING'
-                          THEN 'DIAGNOSED'
-                          ELSE status
-                      END,
-                      updated_at = now()
+                        rc_summary = :sum,
+                        rc_service = :svc,
+                        rc_category = :cat,
+                        rc_confidence = :conf,
+                        rc_evidence = :ev,
+                        rc_actions = :act,
+                        status = CASE
+                            WHEN status <> 'INVESTIGATING' THEN status
+                            WHEN UPPER(COALESCE(:cat, 'UNKNOWN')) = 'UNKNOWN'
+                                THEN 'ESCALATED'
+                            ELSE 'DIAGNOSED'
+                        END,
+                        updated_at = now()
                     WHERE id = :id
+                      AND resolved_at IS NULL
                     """)
                     .param("sum", rc.summary())
                     .param("svc", rc.suspectedService())
                     .param("cat", rc.category())
                     .param("conf", rc.confidence())
-                    .param(
-                            "ev",
-                            String.join(
-                                    "\n",
-                                    rc.evidence()
-                            )
-                    )
-                    .param(
-                            "act",
-                            String.join(
-                                    "\n",
-                                    rc.suggestedActions()
-                            )
-                    )
+                    .param("ev", String.join("\n", rc.evidence()))
+                    .param("act", String.join("\n", rc.suggestedActions()))
                     .param("id", incidentId)
                     .update();
 
             /*
-             * Create remediation proposals from the diagnosed RCA.
-             *
-             * Proposal creation is deliberately isolated from the
-             * main analysis flow. If proposal creation fails, the
-             * successful diagnosis must NOT become ESCALATED.
+             * If the incident was resolved while analysis was running,
+             * do not create proposals or update its diagnosis.
+             */
+            if (updated == 0) {
+
+                log.info(
+                        "Incident {} was already resolved or missing; skipping RCA follow-up for run {}",
+                        incidentId,
+                        runId
+                );
+
+                markRunSuccessful(result, runId);
+                return;
+            }
+
+            /*
+             * Create remediation proposals from the RCA.
              */
             try {
 
-                int created =
-                        proposals.createFrom(incidentId, rc);
+                int created = proposals.createFrom(incidentId, rc);
 
                 if (created > 0) {
 
@@ -325,6 +328,7 @@ public class IncidentService implements DisposableBean {
                                 updated_at = now()
                             WHERE id = :id
                               AND status = 'DIAGNOSED'
+                              AND resolved_at IS NULL
                             """)
                             .param("id", incidentId)
                             .update();
@@ -339,26 +343,10 @@ public class IncidentService implements DisposableBean {
                 );
             }
 
-            /*
-             * Mark the agent run as successful.
-             */
-            jdbc.sql("""
-                    UPDATE agent_runs
-                    SET finished_at = now(),
-                        outcome = 'SUCCESS',
-                        tool_calls = :tc,
-                        seconds = :s,
-                        findings = :f
-                    WHERE run_id = :r
-                    """)
-                    .param("tc", result.toolCalls())
-                    .param("s", result.seconds())
-                    .param("f", result.findings())
-                    .param("r", runId)
-                    .update();
+            markRunSuccessful(result, runId);
 
             log.info(
-                    "Incident {} diagnosed: {} ({})",
+                    "Incident {} analysis completed: {} ({})",
                     incidentId,
                     rc.suspectedService(),
                     rc.category()
@@ -391,30 +379,53 @@ public class IncidentService implements DisposableBean {
                     .param("r", runId)
                     .update();
 
+            /*
+             * Do not overwrite a status changed by another process.
+             * Resolved incidents remain resolved.
+             */
             jdbc.sql("""
                     UPDATE incidents
                     SET status = 'ESCALATED',
                         updated_at = now()
                     WHERE id = :i
                       AND status = 'INVESTIGATING'
+                      AND resolved_at IS NULL
                     """)
                     .param("i", incidentId)
                     .update();
         }
     }
 
-    private Long findOpenRelatedIncident(
-            String application) {
+    private void markRunSuccessful(
+            AnalystAgent.Result result,
+            String runId) {
 
-        List<Map<String, Object>> open =
-                jdbc.sql("""
-                        SELECT id, service
-                        FROM incidents
-                        WHERE resolved_at IS NULL
-                        ORDER BY id DESC
-                        """)
-                        .query()
-                        .listOfRows();
+        jdbc.sql("""
+                UPDATE agent_runs
+                SET finished_at = now(),
+                    outcome = 'SUCCESS',
+                    tool_calls = :tc,
+                    seconds = :s,
+                    findings = :f
+                WHERE run_id = :r
+                """)
+                .param("tc", result.toolCalls())
+                .param("s", result.seconds())
+                .param("f", result.findings())
+                .param("r", runId)
+                .update();
+    }
+
+    private Long findOpenRelatedIncident(String application) {
+
+        List<Map<String, Object>> open = jdbc.sql("""
+                SELECT id, service
+                FROM incidents
+                WHERE resolved_at IS NULL
+                ORDER BY id DESC
+                """)
+                .query()
+                .listOfRows();
 
         for (Map<String, Object> row : open) {
 
@@ -422,9 +433,7 @@ public class IncidentService implements DisposableBean {
                     (String) row.get("service"),
                     application
             )) {
-
-                return ((Number) row.get("id"))
-                        .longValue();
+                return ((Number) row.get("id")).longValue();
             }
         }
 

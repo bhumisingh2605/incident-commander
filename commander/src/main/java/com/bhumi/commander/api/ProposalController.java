@@ -118,7 +118,7 @@ public class ProposalController {
         int status = switch (result.outcome()) {
             case EXECUTED -> 200;
             case NOT_FOUND -> 404;
-            case COOLDOWN, NOT_APPROVED -> 409;
+            case COOLDOWN, NOT_APPROVED, INCIDENT_CLOSED, BUSY -> 409;
             case FAILED -> 500;
         };
 

@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: commander
       POSTGRES_USER: commander
-      POSTGRES_PASSWORD: commander
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD by running . .\.env.ps1}
     ports:
       - "5433:5432"
     volumes:

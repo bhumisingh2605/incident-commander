@@ -1,3 +1,4 @@
+﻿
 param(
     [Parameter(Mandatory = $true)][string]$Id,
     [string]$Commander = "http://localhost:8080",
@@ -25,6 +26,7 @@ $AuthHeader = @{
 $root       = Split-Path -Parent $PSScriptRoot
 $orderUrl   = "http://localhost:8081"
 $paymentUrl = "http://localhost:8082"
+$promUrl    = "http://localhost:9090"
 $orderJson  = '{"item":"book","amount":499}'
 $orderAlert = "HighErrorRate firing on order-service: Error rate above 5% on order-service"
 
@@ -35,77 +37,66 @@ $scenarios = @{
         Service = "payment-service"
         Categories = @("BAD_DEPLOY", "APPLICATION_ERROR")
     }
-
     "S2" = @{
         Name = "payment errors, no recent deploy"
         Alert = $orderAlert
         Service = "payment-service"
         Categories = @("APPLICATION_ERROR", "DEPENDENCY_FAILURE")
     }
-
     "S3" = @{
         Name = "payment slow"
         Alert = "HighLatencyP95 firing on order-service: p95 latency above 1s on order-service"
         Service = "payment-service"
         Categories = @("SLOW_DEPENDENCY", "APPLICATION_ERROR")
     }
-
     "S4" = @{
         Name = "order-service errors, payment healthy"
         Alert = $orderAlert
         Service = "order-service"
         Categories = @("APPLICATION_ERROR")
     }
-
     "S5" = @{
         Name = "payment container stopped"
         Alert = $orderAlert
         Service = "payment-service"
         Categories = @("SERVICE_DOWN", "DEPENDENCY_FAILURE")
     }
-
     "S6" = @{
         Name = "payment memory leak"
         Alert = "HighHeapUsage firing on payment-service: heap above 100 MB on payment-service"
         Service = "payment-service"
         Categories = @("RESOURCE_EXHAUSTION")
     }
-
     "S7" = @{
         Name = "red herring: order deploy, payment errors"
         Alert = $orderAlert
         Service = "payment-service"
         Categories = @("APPLICATION_ERROR", "DEPENDENCY_FAILURE")
     }
-
     "S8" = @{
         Name = "false alarm, system healthy"
         Alert = $orderAlert
         Service = "unknown"
         Categories = @("UNKNOWN")
     }
-
     "S9" = @{
         Name = "order-service slow, payment healthy"
         Alert = "HighLatencyP95 firing on order-service: p95 latency above 1s on order-service"
         Service = "order-service"
         Categories = @("SLOW_DEPENDENCY", "APPLICATION_ERROR")
     }
-
     "S10" = @{
         Name = "order-service memory leak"
         Alert = "HighHeapUsage firing on order-service: heap above 100 MB on order-service"
         Service = "order-service"
         Categories = @("RESOURCE_EXHAUSTION")
     }
-
     "S11" = @{
         Name = "order-service deploy, then order errors"
         Alert = $orderAlert
         Service = "order-service"
         Categories = @("BAD_DEPLOY", "APPLICATION_ERROR")
     }
-
     "S12" = @{
         Name = "latency false alarm, system healthy"
         Alert = "HighLatencyP95 firing on order-service: p95 latency above 1s on order-service"
@@ -121,7 +112,7 @@ if (-not $scenarios.ContainsKey($Id)) {
 
 $sc = $scenarios[$Id]
 
-# Check that the configured analysis endpoint exists.
+# Check the configured analysis endpoint.
 try {
     Invoke-WebRequest `
         -Method Post `
@@ -153,28 +144,29 @@ function Send-Orders([int]$Count, [int]$DelayMs) {
                 -Body $orderJson `
                 -TimeoutSec 30 | Out-Null
         }
-        catch {}
+        catch {
+            Write-Verbose "Order request failed: $($_.Exception.Message)"
+        }
 
         Start-Sleep -Milliseconds $DelayMs
     }
 }
 
 function Reset-Chaos {
-    try {
-        Invoke-RestMethod `
-            -Method Post `
-            -Uri "$paymentUrl/chaos/reset" `
-            -TimeoutSec 10 | Out-Null
+    foreach ($url in @(
+        "$paymentUrl/chaos/reset",
+        "$orderUrl/chaos/reset"
+    )) {
+        try {
+            Invoke-RestMethod `
+                -Method Post `
+                -Uri $url `
+                -TimeoutSec 10 | Out-Null
+        }
+        catch {
+            Write-Verbose "Could not reset chaos at $url"
+        }
     }
-    catch {}
-
-    try {
-        Invoke-RestMethod `
-            -Method Post `
-            -Uri "$orderUrl/chaos/reset" `
-            -TimeoutSec 10 | Out-Null
-    }
-    catch {}
 }
 
 function Deploy([string]$service, [string]$version, [string]$notes) {
@@ -203,10 +195,7 @@ function Wait-Healthy {
 
         for ($i = 0; $i -lt 45 -and -not $ok; $i++) {
             try {
-                Invoke-RestMethod `
-                    -Uri $url `
-                    -TimeoutSec 3 | Out-Null
-
+                Invoke-RestMethod -Uri $url -TimeoutSec 3 | Out-Null
                 $ok = $true
             }
             catch {
@@ -215,10 +204,41 @@ function Wait-Healthy {
         }
 
         if (-not $ok) {
-            Write-Host "Service did not become healthy: $url"
-            exit 1
+            throw "Service did not become healthy: $url"
         }
     }
+}
+
+# Query real application-route latency, excluding Actuator endpoints.
+function Get-P95Latency([string]$service) {
+    $query = 'histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{application="' +
+        $service + '",uri!~"/actuator.*"}[5m])))'
+
+    $encodedQuery = [uri]::EscapeDataString($query)
+    $url = "$promUrl/api/v1/query?query=$encodedQuery"
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -TimeoutSec 10
+
+        if (
+            $response.status -eq "success" -and
+            $response.data.result.Count -gt 0
+        ) {
+            $value = [double]$response.data.result[0].value[1]
+
+            if (
+                -not [double]::IsNaN($value) -and
+                -not [double]::IsInfinity($value)
+            ) {
+                return $value
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Could not query p95 for $service`: $($_.Exception.Message)"
+    }
+
+    return $null
 }
 
 Write-Host "[$Id] $($sc.Name)"
@@ -229,6 +249,10 @@ Push-Location $root
 try {
     docker compose up -d --force-recreate order-service payment-service prometheus |
         Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Compose failed to recreate the scenario containers."
+    }
 }
 finally {
     Pop-Location
@@ -236,11 +260,13 @@ finally {
 
 Wait-Healthy
 
+# Wait until Prometheus is ready.
 $prometheusReady = $false
+
 for ($i = 0; $i -lt 30 -and -not $prometheusReady; $i++) {
     try {
         Invoke-RestMethod `
-            "http://localhost:9090/-/ready" `
+            -Uri "$promUrl/-/ready" `
             -TimeoutSec 2 | Out-Null
 
         $prometheusReady = $true
@@ -250,7 +276,9 @@ for ($i = 0; $i -lt 30 -and -not $prometheusReady; $i++) {
     }
 }
 
-if (-not $prometheusReady) { throw "Prometheus did not become ready; scenario aborted." }
+if (-not $prometheusReady) {
+    throw "Prometheus did not become ready; scenario aborted."
+}
 
 # Clear deployment history for this scenario.
 docker exec commander-db psql `
@@ -258,8 +286,23 @@ docker exec commander-db psql `
     -d commander `
     -c "DELETE FROM deployments;" | Out-Null
 
-Write-Host "Baseline traffic (30 s)..."
-Send-Orders 60 500
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not clear deployment history."
+}
+
+# Baseline traffic: light load for S12; existing load for other scenarios.
+if ($Id -eq "S12") {
+    Write-Host "S12: sending light baseline traffic to populate latency metrics..."
+    Send-Orders 10 1000
+
+    # Give Prometheus time to scrape the application counters and histogram buckets.
+    Write-Host "S12: waiting for latency metrics to be scraped..."
+    Start-Sleep -Seconds 20
+}
+else {
+    Write-Host "Baseline traffic (30 s)..."
+    Send-Orders 60 500
+}
 
 Write-Host "Applying fault..."
 
@@ -271,35 +314,29 @@ switch ($Id) {
             -Method Post `
             -Uri "$paymentUrl/chaos/error?enabled=true" | Out-Null
     }
-
     "S2" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$paymentUrl/chaos/error?enabled=true" | Out-Null
     }
-
     "S3" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$paymentUrl/chaos/slow?ms=3000" | Out-Null
     }
-
     "S4" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$orderUrl/chaos/error?enabled=true" | Out-Null
     }
-
     "S5" {
         docker stop payment-service | Out-Null
     }
-
     "S6" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$paymentUrl/chaos/memory-leak?mb=120" | Out-Null
     }
-
     "S7" {
         Deploy "order-service" "v3.1.0" "scenario S7 red herring"
 
@@ -307,23 +344,19 @@ switch ($Id) {
             -Method Post `
             -Uri "$paymentUrl/chaos/error?enabled=true" | Out-Null
     }
-
     "S8" {
         # False alarm: do not inject a fault.
     }
-
     "S9" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$orderUrl/chaos/slow?ms=3000" | Out-Null
     }
-
     "S10" {
         Invoke-RestMethod `
             -Method Post `
             -Uri "$orderUrl/chaos/memory-leak?mb=120" | Out-Null
     }
-
     "S11" {
         Deploy "order-service" "v4.0.0" "scenario S11"
 
@@ -331,33 +364,40 @@ switch ($Id) {
             -Method Post `
             -Uri "$orderUrl/chaos/error?enabled=true" | Out-Null
     }
-
     "S12" {
-        # Latency false alarm: do not inject a fault.
+        # Latency false alarm: no fault is injected.
     }
 }
 
-Write-Host "Traffic under fault (30 s)..."
-Send-Orders 60 500
+# Run normal fault traffic for S1-S11 only.
+$job = $null
 
-# Continue background traffic while the analyst investigates.
-$job = Start-Job -ScriptBlock {
-    param($url, $body)
+if ($Id -ne "S12") {
+    Write-Host "Traffic under fault (30 s)..."
+    Send-Orders 60 500
 
-    1..1200 | ForEach-Object {
-        try {
-            Invoke-RestMethod `
-                -Method Post `
-                -Uri "$url/orders" `
-                -ContentType "application/json" `
-                -Body $body `
-                -TimeoutSec 30 | Out-Null
+    # Continue background traffic while the analyst investigates.
+    $job = Start-Job -ScriptBlock {
+        param($url, $body)
+
+        1..1200 | ForEach-Object {
+            try {
+                Invoke-RestMethod `
+                    -Method Post `
+                    -Uri "$url/orders" `
+                    -ContentType "application/json" `
+                    -Body $body `
+                    -TimeoutSec 30 | Out-Null
+            }
+            catch {}
+
+            Start-Sleep -Seconds 1
         }
-        catch {}
-
-        Start-Sleep -Seconds 1
-    }
-} -ArgumentList $orderUrl, $orderJson
+    } -ArgumentList $orderUrl, $orderJson
+}
+else {
+    Write-Host "S12: skipping fault traffic and background load."
+}
 
 Write-Host "Running the analyst (this takes a few minutes)..."
 
@@ -366,7 +406,6 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $r = $null
 
 try {
-    # FIX: Include the operator's Basic Authentication header.
     $r = Invoke-RestMethod `
         -Uri "$Commander/debug/${Endpoint}?alert=$alertEnc" `
         -Headers $AuthHeader `
@@ -379,7 +418,6 @@ catch {
 finally {
     $sw.Stop()
 
-    # Stop background traffic and reset injected faults.
     if ($null -ne $job) {
         Stop-Job $job -ErrorAction SilentlyContinue
         Remove-Job $job -Force -ErrorAction SilentlyContinue
@@ -392,11 +430,34 @@ finally {
     }
 }
 
+# Inspect latency telemetry after analysis.
+$orderP95 = Get-P95Latency "order-service"
+$paymentP95 = Get-P95Latency "payment-service"
+
+if ($null -ne $orderP95) {
+    Write-Host ("order-service application-route latency_p95: {0:N2} ms" -f ($orderP95 * 1000))
+}
+else {
+    Write-Host "order-service application-route latency_p95: no usable data in the last 5 minutes"
+}
+
+if ($null -ne $paymentP95) {
+    Write-Host ("payment-service application-route latency_p95: {0:N2} ms" -f ($paymentP95 * 1000))
+}
+else {
+    Write-Host "payment-service application-route latency_p95: no usable data in the last 5 minutes"
+}
+
 # Score the result.
 $correct = $false
 $service = "-"
 $category = "-"
 $conf = 0
+$telemetryValid = $false
+
+if ($Id -eq "S12") {
+    $telemetryValid = ($null -ne $orderP95)
+}
 
 if ($null -ne $r) {
     $rc = $r.rootCause
@@ -405,13 +466,25 @@ if ($null -ne $r) {
     $category = $rc.category
     $conf = $rc.confidence
 
-    if ($Id -eq "S8" -or $Id -eq "S12") {
-        $correct = ($service -eq "unknown")
+    if ($Id -eq "S8") {
+        $correct = (
+            $service -eq "unknown" -and
+            $category -eq "UNKNOWN"
+        )
+    }
+    elseif ($Id -eq "S12") {
+        # S12 passes only if the model returns UNKNOWN and telemetry exists.
+        $correct = (
+            $service -eq "unknown" -and
+            $category -eq "UNKNOWN" -and
+            $telemetryValid
+        )
     }
     else {
-        $correct = `
-            ($service -eq $sc.Service) -and `
+        $correct = (
+            ($service -eq $sc.Service) -and
             ($sc.Categories -contains $category)
+        )
     }
 }
 
@@ -420,13 +493,16 @@ $row = [pscustomobject]@{
     Time             = (Get-Date -Format "yyyy-MM-dd HH:mm")
     Scenario         = $Id
     Model            = $Model
-    PromptVersion     = $PromptVersion
+    PromptVersion    = $PromptVersion
     ExpectedService  = $sc.Service
     PredictedService = $service
     Category         = $category
     Confidence       = $conf
     ServiceCorrect   = ($service -eq $sc.Service)
     Correct          = $correct
+    TelemetryValid   = if ($Id -eq "S12") { $telemetryValid } else { $null }
+    OrderP95Ms       = if ($null -ne $orderP95) { [math]::Round($orderP95 * 1000, 2) } else { $null }
+    PaymentP95Ms     = if ($null -ne $paymentP95) { [math]::Round($paymentP95 * 1000, 2) } else { $null }
     ToolCalls        = if ($null -ne $r) { $r.toolCalls } else { $null }
     Seconds          = [int]$sw.Elapsed.TotalSeconds
 }
@@ -457,7 +533,12 @@ if ($null -ne $r) {
     $r.rootCause.evidence
 }
 
+if ($Id -eq "S12" -and -not $telemetryValid) {
+    Write-Warning "S12 is not validated: usable order-service latency telemetry was missing."
+}
+
 if ($CooldownSeconds -gt 0) {
     Write-Host "Cooling down $CooldownSeconds s so this scenario's data leaves the metrics window..."
     Start-Sleep -Seconds $CooldownSeconds
 }
+

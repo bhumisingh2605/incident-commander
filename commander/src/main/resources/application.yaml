@@ -1,13 +1,22 @@
+
 spring:
   application:
     name: commander
+
+  http:
+    client:
+      connect-timeout: 5s
+      read-timeout: 300s
+
   datasource:
     url: jdbc:postgresql://localhost:5433/commander
     username: commander
-    password: commander
+    password: ${DB_PASSWORD}
+
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false
+
   ai:
     ollama:
       base-url: http://localhost:11434
@@ -16,7 +25,9 @@ spring:
       chat.options:
         model: qwen3:8b
         temperature: 0.1
+
 server:
   port: 8080
+
 commander:
   prometheus-url: http://localhost:9090
