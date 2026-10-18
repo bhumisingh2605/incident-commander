@@ -118,7 +118,8 @@ public class IncidentService implements DisposableBean {
     }
 
     /**
-     * An incident resolves when none of its linked alerts are firing.
+     * Resolves an incident when all linked alerts clear,
+     * except when it has been escalated for manual follow-up.
      */
     public void onAlertResolved(String fingerprint) {
 
@@ -153,6 +154,7 @@ public class IncidentService implements DisposableBean {
                             updated_at = now()
                         WHERE id = :i
                           AND resolved_at IS NULL
+                          AND status <> 'ESCALATED'
                         """)
                         .param("i", incidentId)
                         .update();
@@ -173,6 +175,11 @@ public class IncidentService implements DisposableBean {
                             "Incident {} resolved: all alerts cleared; cancelled {} pending proposals",
                             incidentId,
                             cancelled
+                    );
+                } else {
+                    log.info(
+                            "Incident {} was not auto-resolved because it is already resolved or requires escalation",
+                            incidentId
                     );
                 }
             }
@@ -268,7 +275,7 @@ public class IncidentService implements DisposableBean {
 
             /*
              * Update only incidents that are still unresolved.
-             * A resolved incident must not receive a late RCA update.
+             * Preserve statuses changed by another process.
              */
             int updated = jdbc.sql("""
                     UPDATE incidents SET
@@ -380,8 +387,8 @@ public class IncidentService implements DisposableBean {
                     .update();
 
             /*
+             * Escalate only if the incident is still investigating.
              * Do not overwrite a status changed by another process.
-             * Resolved incidents remain resolved.
              */
             jdbc.sql("""
                     UPDATE incidents
