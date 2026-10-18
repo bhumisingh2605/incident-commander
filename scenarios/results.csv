@@ -168,3 +168,5 @@
 "2026-10-16 17:46","S9","qwen3:8b","regress-2","order-service","payment-service","SLOW_DEPENDENCY","0.8","False","False","10","333"
 "2026-10-17 12:49","S9","qwen3:8b","regress-2","order-service","order-service","APPLICATION_ERROR","0.9","True","True","10","328"
 "2026-10-17 17:41","S4","qwen3:8b","v3-guard","order-service","order-service","APPLICATION_ERROR","0.95","True","True","8","154"
+"2026-10-18 19:11","S12","qwen3:8b","v3-guard","unknown","unknown","UNKNOWN","0.2","True","True","0","40"
+"2026-10-18 19:17","S9","qwen3:8b","v3-guard","order-service","order-service","APPLICATION_ERROR","0.8","True","True","10","346"
