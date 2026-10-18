@@ -1,9 +1,9 @@
-
-        package com.bhumi.commander.remediation;
+package com.bhumi.commander.remediation;
 
 import com.bhumi.commander.agent.RootCause;
 import com.bhumi.commander.tools.ServiceRegistry;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -35,11 +35,11 @@ public class ProposalService {
     }
 
     public int createFrom(long incidentId, RootCause rc) {
-
         if (rc == null
                 || rc.category() == null
                 || "UNKNOWN".equalsIgnoreCase(rc.category())
                 || rc.suspectedService() == null
+                || rc.suspectedService().isBlank()
                 || rc.suggestedActions() == null) {
             return 0;
         }
@@ -59,7 +59,7 @@ public class ProposalService {
             return 0;
         }
 
-        // Limit active proposals for this incident.
+        // Count active proposals for this incident.
         Long existing = jdbc.sql("""
                 SELECT count(*)
                 FROM action_proposals
@@ -80,29 +80,38 @@ public class ProposalService {
         int created = 0;
 
         for (String suggested : rc.suggestedActions()) {
-
             if (created >= remaining) {
                 break;
             }
 
-            if (suggested == null) {
+            if (suggested == null || suggested.isBlank()) {
                 continue;
             }
 
-            String action = suggested.trim().toUpperCase();
+            // Accept either:
+            // "RESTART_SERVICE"
+            // "RESTART_SERVICE order-service"
+            String[] parts = suggested.trim().split("\\s+", 2);
 
+            String action = parts[0].toUpperCase(Locale.ROOT);
+
+            // If no explicit target is supplied, use the diagnosed service.
+            String target = parts.length == 2
+                    ? parts[1].trim()
+                    : rc.suspectedService().trim();
+
+            // Only explicitly permitted actions are accepted.
             if (!ALLOWED_ACTIONS.contains(action)) {
                 continue;
             }
 
-            String target = rc.suspectedService().trim();
-
+            // Never accept an unknown service.
             if (target.isBlank() || !services.known(target)) {
                 continue;
             }
 
-            // Recheck the incident state at insertion time.
-            // Avoid duplicate active proposals for the same action/service.
+            // Insert only if the incident is still unresolved and
+            // an equivalent active proposal does not already exist.
             int inserted = jdbc.sql("""
                     INSERT INTO action_proposals
                         (incident_id, action_type, target_service, status)
@@ -136,7 +145,6 @@ public class ProposalService {
     }
 
     public Outcome decide(long id, boolean approve, String by) {
-
         List<Map<String, Object>> rows = jdbc.sql("""
                 SELECT p.status, i.resolved_at
                 FROM action_proposals p
@@ -158,19 +166,19 @@ public class ProposalService {
             return Outcome.ALREADY_DECIDED;
         }
 
-        // Never approve or reject a pending proposal after its incident resolves.
+        // A resolved incident must not have a pending proposal approved.
         if (row.get("resolved_at") != null) {
             cancelPendingProposal(
                     id,
                     by,
-                    "Cancelled because the incident is already resolved"
-            );
+                    "Cancelled because the incident is already resolved");
             return Outcome.INCIDENT_RESOLVED;
         }
 
         String nextStatus = approve ? "APPROVED" : "REJECTED";
 
-        // The status and unresolved-incident checks happen atomically.
+        // Atomically verify that the proposal is still pending and
+        // the incident remains unresolved.
         int updated = jdbc.sql("""
                 UPDATE action_proposals p
                 SET status = :st,
@@ -194,7 +202,7 @@ public class ProposalService {
             return Outcome.OK;
         }
 
-        // The proposal or incident may have changed concurrently.
+        // Recheck after a concurrent state change.
         List<Map<String, Object>> current = jdbc.sql("""
                 SELECT p.status, i.resolved_at
                 FROM action_proposals p
@@ -213,13 +221,10 @@ public class ProposalService {
 
         if (latest.get("resolved_at") != null
                 && "PENDING".equals(latest.get("status"))) {
-
             cancelPendingProposal(
                     id,
                     by,
-                    "Cancelled because the incident is already resolved"
-            );
-
+                    "Cancelled because the incident is already resolved");
             return Outcome.INCIDENT_RESOLVED;
         }
 
@@ -230,7 +235,6 @@ public class ProposalService {
             long id,
             String by,
             String reason) {
-
         jdbc.sql("""
                 UPDATE action_proposals
                 SET status = 'CANCELLED',
