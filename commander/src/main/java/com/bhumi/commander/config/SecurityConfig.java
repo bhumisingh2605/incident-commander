@@ -28,7 +28,8 @@ public class SecurityConfig {
                 .httpBasic(Customizer.withDefaults())
                 .authorizeHttpRequests(a -> a
                         .requestMatchers("/error", "/actuator/health", "/actuator/health/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/alerts").hasRole("WEBHOOK")
+                        .requestMatchers("/actuator/prometheus").hasRole("OPERATOR")
+                .requestMatchers(HttpMethod.POST, "/api/alerts").hasRole("WEBHOOK")
                         .requestMatchers(HttpMethod.GET, "/ui/**").hasAnyRole("VIEWER", "OPERATOR")
                         .requestMatchers(HttpMethod.GET, "/api/**").hasAnyRole("VIEWER", "OPERATOR")
                         .requestMatchers("/api/**", "/debug/**").hasRole("OPERATOR")

@@ -67,6 +67,12 @@
 			<artifactId>spring-ai-starter-model-ollama</artifactId>
 		</dependency>
 
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+    <scope>runtime</scope>
+</dependency>
+
 		<!-- Database dependencies -->
 		<dependency>
 			<groupId>org.postgresql</groupId>

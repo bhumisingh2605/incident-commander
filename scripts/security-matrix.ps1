@@ -32,6 +32,10 @@ $first = if ($list) { @($list)[0].id } else { $null }
 
 $cases = @(
   @{ N = "health probe";                   M = "GET";    P = "/actuator/health";                      E = @{ none = 200; viewer = 200; operator = 200; webhook = 200 } }
+  @{ N = "metrics endpoint";               M = "GET";    P = "/actuator/prometheus";                  E = (Want 403 200) }
+  @{ N = "audit events";                   M = "GET";    P = "/api/audit/events?limit=5";             E = (Want 200 200) }
+  @{ N = "audit events, bad subject";      M = "GET";    P = "/api/audit/events?subject=EVIL";        E = (Want 400 400) }
+  @{ N = "audit events, bad limit";        M = "GET";    P = "/api/audit/events?limit=abc";           E = (Want 400 400) }
   @{ N = "whoami";                         M = "GET";    P = "/api/me";                               E = (Want 200 200) }
   @{ N = "list incidents";                 M = "GET";    P = "/api/incidents";                        E = (Want 200 200) }
   @{ N = "incident not found";             M = "GET";    P = "/api/incidents/999999";                 E = (Want 404 404) }

@@ -31,3 +31,13 @@ server:
 
 commander:
   prometheus-url: http://localhost:9090
+
+logging:
+  pattern:
+    level: "%5p [req=%X{requestId:-} inc=%X{incidentId:-} prop=%X{proposalId:-} run=%X{runId:-} user=%X{actor:-}]"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
