@@ -1,3 +1,4 @@
+
 package com.bhumi.commander.remediation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -15,8 +16,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
-import com.bhumi.commander.remediation.ActionExecutor;
-import com.bhumi.commander.remediation.RemediationAction;
 import com.bhumi.commander.tools.ServiceRegistry;
 
 import org.flywaydb.core.Flyway;
@@ -73,7 +72,8 @@ class ActionExecutorPostgresIntegrationTest {
                 jdbc,
                 registry,
                 verifier,
-                txManager);
+                txManager,
+                remediationAction);
     }
 
     @BeforeEach
@@ -139,9 +139,7 @@ class ActionExecutorPostgresIntegrationTest {
     void shouldReturnNotFoundForMissingProposal() {
         ActionExecutor.Result result = executor.execute(-999L);
 
-        assertEquals(
-                ActionExecutor.Outcome.NOT_FOUND,
-                result.outcome());
+        assertEquals(ActionExecutor.Outcome.NOT_FOUND, result.outcome());
     }
 
     @Test
@@ -190,9 +188,7 @@ class ActionExecutorPostgresIntegrationTest {
 
         ActionExecutor.Result result = executor.execute(proposalId);
 
-        assertEquals(
-                ActionExecutor.Outcome.FAILED,
-                result.outcome());
+        assertEquals(ActionExecutor.Outcome.FAILED, result.outcome());
     }
 
     @Test
@@ -207,9 +203,7 @@ class ActionExecutorPostgresIntegrationTest {
 
         ActionExecutor.Result result = executor.execute(proposalId);
 
-        assertEquals(
-                ActionExecutor.Outcome.FAILED,
-                result.outcome());
+        assertEquals(ActionExecutor.Outcome.FAILED, result.outcome());
     }
 
     @Test
@@ -237,9 +231,7 @@ class ActionExecutorPostgresIntegrationTest {
 
         ActionExecutor.Result result = executor.execute(proposalId);
 
-        assertEquals(
-                ActionExecutor.Outcome.COOLDOWN,
-                result.outcome());
+        assertEquals(ActionExecutor.Outcome.COOLDOWN, result.outcome());
     }
 
     @Test
