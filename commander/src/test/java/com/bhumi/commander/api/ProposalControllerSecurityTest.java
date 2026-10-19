@@ -16,6 +16,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+@org.springframework.context.annotation.Import(com.bhumi.commander.TestPostgres.class)
 @SpringBootTest(properties = {
         "COMMANDER_VIEWER_PASSWORD=test-viewer-password-123",
         "COMMANDER_OPERATOR_PASSWORD=test-operator-password-123",
