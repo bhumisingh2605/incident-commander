@@ -1,0 +1,45 @@
+services:
+  postgres:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commander -d commander"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  commander:
+    build: ./commander
+    container_name: commander
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Kolkata
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/commander
+      SPRING_DATASOURCE_USERNAME: commander
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD by running . .\.env.ps1}
+      SPRING_AI_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      COMMANDER_PROMETHEUS_URL: http://prometheus:9090
+      ORDER_SERVICE_URL: http://order-service:8081
+      PAYMENT_SERVICE_URL: http://payment-service:8082
+      COMMANDER_VIEWER_PASSWORD: ${COMMANDER_VIEWER_PASSWORD:-}
+      COMMANDER_OPERATOR_PASSWORD: ${COMMANDER_OPERATOR_PASSWORD:-}
+      COMMANDER_WEBHOOK_PASSWORD: ${COMMANDER_WEBHOOK_PASSWORD:-}
+      JAVA_TOOL_OPTIONS: "-Xmx512m"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 768m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s

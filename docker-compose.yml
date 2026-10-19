@@ -1,5 +1,4 @@
 services:
-
   postgres:
     image: pgvector/pgvector:pg16
     container_name: commander-db
