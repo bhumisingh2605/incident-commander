@@ -4,6 +4,11 @@
 
 Incident Commander helps investigate application incidents using service health, metrics, dependency information, and logs. It uses Spring AI and a local Ollama model to assist with root-cause analysis and supports a controlled remediation workflow with approval and verification.
 
+## Documentation
+
+- [Configuration Guide](../docs/CONFIGURATION.md) — Environment variables, ports, and operational limits.
+- [API Reference](../docs/API.md) — API endpoints, authentication, and PowerShell examples.
+
 ## Key Features
 
 - **AI-assisted root-cause analysis** — Investigate incidents and identify suspected failing services.
@@ -37,38 +42,38 @@ Incident Commander helps investigate application incidents using service health,
 
 ```text
 Application Services
-        |
-        v
- Prometheus Metrics
-        |
-        v
-  Alertmanager
-        |
-        v
+       |
+       v
+Prometheus Metrics
+       |
+       v
+Alertmanager
+       |
+       v
 Incident Commander
 (Spring Boot + Spring AI)
-        |
-        v
- Investigation Tools
+       |
+       v
+Investigation Tools
 (Health, Metrics, Dependencies, Logs)
-        |
-        v
- AI Root-Cause Analysis
-        |
-        v
- Root-Cause Guardrails
-        |
-        v
- Remediation Proposal
-        |
-        v
- Operator Approval
-        |
-        v
- Action Execution
-        |
-        v
- Verification and Incident Lifecycle
+       |
+       v
+AI Root-Cause Analysis
+       |
+       v
+Root-Cause Guardrails
+       |
+       v
+Remediation Proposal
+       |
+       v
+Operator Approval
+       |
+       v
+Action Execution
+       |
+       v
+Verification and Incident Lifecycle
 ```
 
 PostgreSQL stores application state, while Prometheus and Alertmanager provide monitoring and alerting integrations.
@@ -105,9 +110,11 @@ cd incident-commander
 
 ### 2. Configure environment variables
 
-Configure the required environment variables using the project's existing environment setup. These include the database credentials and application security credentials.
+Configure the required environment variables using the project's existing environment setup. These include database credentials and application security credentials.
 
 Do not commit real passwords, API keys, or other secrets to Git.
+
+See the [Configuration Guide](../docs/CONFIGURATION.md) for configuration details.
 
 ### 3. Start infrastructure
 
