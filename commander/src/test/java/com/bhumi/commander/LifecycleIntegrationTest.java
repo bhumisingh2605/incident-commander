@@ -468,4 +468,18 @@ class LifecycleIntegrationTest {
 
         assertThat(out.category()).isEqualTo("SLOW_DEPENDENCY");
     }
+    @Test
+    void anEscalatedIncidentKeepsItsVerdictWhenItsAlertsClear() {
+        long inc = incident("ESCALATED", false);
+        jdbc.sql("UPDATE incidents SET status = 'RESOLVED', resolved_at = now() WHERE id = :id").param("id", inc).update();
+        assertThat(incidentStatus(inc)).isEqualTo("ESCALATED");
+        assertThat(incidentOpen(inc)).isFalse();
+    }
+
+    @Test
+    void anIncidentThatWasNotEscalatedStillResolvesNormally() {
+        long inc = incident("DIAGNOSED", false);
+        jdbc.sql("UPDATE incidents SET status = 'RESOLVED', resolved_at = now() WHERE id = :id").param("id", inc).update();
+        assertThat(incidentStatus(inc)).isEqualTo("RESOLVED");
+    }
 }
