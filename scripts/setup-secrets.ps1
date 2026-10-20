@@ -17,13 +17,16 @@ $viewer = New-Secret
 $webhook = New-Secret
 
 $lines = @(
-    '$env:COMMANDER_VIEWER_PASSWORD = "' + $viewer + '"',
-    '$env:COMMANDER_OPERATOR_PASSWORD = "' + $operator + '"',
-    '$env:COMMANDER_WEBHOOK_PASSWORD = "' + $webhook + '"',
+    '$env:COMMANDER_VIEWER_PASSWORD = "' + $viewer + '"'
+    '$env:COMMANDER_OPERATOR_PASSWORD = "' + $operator + '"'
+    '$env:COMMANDER_WEBHOOK_PASSWORD = "' + $webhook + '"'
     '$global:H = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("operator:" + $env:COMMANDER_OPERATOR_PASSWORD)) }'
 )
 
-Set-Content -Path (Join-Path $root ".env.ps1") -Value $lines
-Set-Content -Path (Join-Path $root "infra\alertmanager\webhook_password") -Value $webhook -NoNewline -Encoding ascii
+$envFile = Join-Path $root ".env.ps1"
+Set-Content -Path $envFile -Value $lines -Encoding utf8
+
+$webhookFile = Join-Path $root "infra\alertmanager\webhook_password"
+Set-Content -Path $webhookFile -Value $webhook -NoNewline -Encoding ascii
 
 Write-Host "Done. Load them in each terminal with: . .\.env.ps1"
