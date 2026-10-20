@@ -39,17 +39,7 @@ class ActionExecutorPostgresIntegrationTest {
 
     @BeforeAll
     static void initializeDatabase() {
-        String password = System.getenv("DB_PASSWORD");
-
-        if (password == null || password.isBlank()) {
-            throw new IllegalStateException(
-                    "Set DB_PASSWORD before running integration tests");
-        }
-
-        dataSource = new DriverManagerDataSource(
-                "jdbc:postgresql://localhost:5433/commander_test",
-                "commander",
-                password);
+        dataSource = SharedPostgres.dataSource();
 
         Flyway.configure()
                 .dataSource(dataSource)

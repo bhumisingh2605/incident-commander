@@ -26,18 +26,7 @@ class ProposalServicePostgresIntegrationTest {
 
     @BeforeAll
     static void initializeDatabase() {
-        String password = System.getenv("DB_PASSWORD");
-
-        if (password == null || password.isBlank()) {
-            throw new IllegalStateException(
-                    "Set the DB_PASSWORD environment variable first");
-        }
-
-        String url =
-                "jdbc:postgresql://localhost:5433/commander_test";
-
-        DataSource dataSource = new DriverManagerDataSource(
-                url, "commander", password);
+        DataSource dataSource = SharedPostgres.dataSource();
 
         Flyway.configure()
                 .dataSource(dataSource)
