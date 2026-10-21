@@ -8,11 +8,16 @@ import com.bhumi.commander.tools.ServiceRegistry;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
@@ -24,10 +29,14 @@ public class IncidentService implements DisposableBean {
 
     private static final String MODEL = "qwen3:8b";
 
+    // Pause before the single retry when the model server cannot be reached.
+    private static final long CONNECTION_RETRY_DELAY_SECONDS = 5;
+
     private final JdbcClient jdbc;
     private final FastAnalyst analyst;
     private final ServiceRegistry services;
     private final ProposalService proposals;
+    private final long analysisTimeoutSeconds;
 
     // Run one local-model investigation at a time.
     private final ExecutorService worker =
@@ -37,21 +46,33 @@ public class IncidentService implements DisposableBean {
                 return t;
             });
 
+    // Runs the model call itself so the worker can enforce an overall deadline
+    // and move on to the next incident if the model hangs.
+    private final ExecutorService analysisPool =
+            Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "analysis-run");
+                t.setDaemon(true);
+                return t;
+            });
+
     public IncidentService(
             JdbcClient jdbc,
             FastAnalyst analyst,
             ServiceRegistry services,
-            ProposalService proposals) {
+            ProposalService proposals,
+            @Value("${commander.analysis-timeout-seconds:600}") long analysisTimeoutSeconds) {
 
         this.jdbc = jdbc;
         this.analyst = analyst;
         this.services = services;
         this.proposals = proposals;
+        this.analysisTimeoutSeconds = analysisTimeoutSeconds;
     }
 
     @Override
     public void destroy() {
         worker.shutdownNow();
+        analysisPool.shutdownNow();
     }
 
     /**
@@ -263,7 +284,7 @@ public class IncidentService implements DisposableBean {
              * Gather evidence and obtain the root-cause analysis.
              */
             AnalystAgent.Result result =
-                    analyst.analyze(runId, alertText);
+                    analyzeWithDeadline(runId, alertText);
 
             RootCause rc = result.rootCause();
 
@@ -393,14 +414,111 @@ public class IncidentService implements DisposableBean {
             jdbc.sql("""
                     UPDATE incidents
                     SET status = 'ESCALATED',
+                        rc_summary = COALESCE(NULLIF(rc_summary, ''), :msg),
                         updated_at = now()
                     WHERE id = :i
                       AND status = 'INVESTIGATING'
                       AND resolved_at IS NULL
                     """)
                     .param("i", incidentId)
+                    .param("msg", failureSummary(e, runId))
                     .update();
         }
+    }
+
+    /**
+     * Runs the analyst with an overall deadline. If the model server cannot
+     * be reached, retries once after a short pause. Any other failure, or a
+     * timeout, propagates so the caller escalates the incident to a human.
+     */
+    private AnalystAgent.Result analyzeWithDeadline(
+            String runId,
+            String alertText) throws Exception {
+
+        try {
+            return analyzeOnce(runId, alertText);
+        } catch (Exception e) {
+
+            if (!isConnectionFailure(e)) {
+                throw e;
+            }
+
+            log.warn(
+                    "Analyst run {}: model unreachable ({}); retrying once in {}s",
+                    runId,
+                    e.toString(),
+                    CONNECTION_RETRY_DELAY_SECONDS
+            );
+
+            TimeUnit.SECONDS.sleep(CONNECTION_RETRY_DELAY_SECONDS);
+
+            return analyzeOnce(runId, alertText);
+        }
+    }
+
+    private AnalystAgent.Result analyzeOnce(
+            String runId,
+            String alertText) throws Exception {
+
+        Future<AnalystAgent.Result> future =
+                analysisPool.submit(() -> analyst.analyze(runId, alertText));
+
+        try {
+            return future.get(analysisTimeoutSeconds, TimeUnit.SECONDS);
+
+        } catch (TimeoutException e) {
+            // The abandoned call is bounded by the HTTP read timeout; its
+            // result is discarded, so it cannot update the incident later.
+            future.cancel(true);
+            throw new IllegalStateException(
+                    "Analysis timed out after " + analysisTimeoutSeconds + "s");
+
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception ex) {
+                throw ex;
+            }
+            throw e;
+
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            throw e;
+        }
+    }
+
+    private static boolean isConnectionFailure(Throwable t) {
+
+        for (Throwable c = t; c != null; c = c.getCause()) {
+
+            if (c instanceof java.net.ConnectException
+                    || c instanceof java.net.http.HttpConnectTimeoutException) {
+                return true;
+            }
+
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    /** Operator-facing reason shown on the incident; full detail stays in agent_runs. */
+    private static String failureSummary(Exception e, String runId) {
+
+        String reason;
+
+        if (isConnectionFailure(e)) {
+            reason = "the AI model could not be reached";
+        } else if (e instanceof IllegalStateException
+                && String.valueOf(e.getMessage()).startsWith("Analysis timed out")) {
+            reason = e.getMessage().toLowerCase();
+        } else {
+            reason = "an unexpected error occurred";
+        }
+
+        return "Automated analysis could not complete: " + reason
+                + " (run " + runId + "). Manual investigation required.";
     }
 
     private void markRunSuccessful(

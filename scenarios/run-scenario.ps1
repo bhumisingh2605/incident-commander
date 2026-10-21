@@ -404,6 +404,10 @@ try {
 catch {
     $analysisError = $_.Exception.Message
     Write-Host "Scenario $Id failed: $analysisError"
+    if ($analysisError -match "404") {
+        Write-Host "Hint: /debug endpoints are disabled by default. Start Commander with SPRING_PROFILES_ACTIVE=dev."
+    }
+}
 }
 finally {
     if ($null -ne $scenarioJob) {

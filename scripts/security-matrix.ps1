@@ -1,4 +1,4 @@
-param([string]$Base = "http://localhost:8080")
+param([string]$Base = "http://localhost:8080", [switch]$DebugEnabled)  # pass -DebugEnabled when the app runs with SPRING_PROFILES_ACTIVE=dev
 
 foreach ($v in "COMMANDER_VIEWER_PASSWORD", "COMMANDER_OPERATOR_PASSWORD", "COMMANDER_WEBHOOK_PASSWORD") {
   if (-not (Get-Item "env:$v" -ErrorAction SilentlyContinue)) { Write-Host "Set $v first (run: . .\.env.ps1)"; exit 1 }
@@ -52,7 +52,7 @@ $cases = @(
   @{ N = "execute, unknown id";            M = "POST";   P = "/api/proposals/999999/execute";         E = (Want 403 404) }
   @{ N = "re-investigate, unknown id";     M = "POST";   P = "/api/incidents/999999/investigate";     E = (Want 403 404) }
   @{ N = "delete an incident";             M = "DELETE"; P = "/api/incidents/1";                      E = (Want 403 405) }
-  @{ N = "debug endpoint";                 M = "GET";    P = "/debug/health?service=payment-service"; E = (Want 403 200) }
+  @{ N = "debug endpoint";                 M = "GET";    P = "/debug/health?service=payment-service"; E = (Want 403 $(if ($DebugEnabled) { 200 } else { 404 })) }
   @{ N = "record deploy, unknown service"; M = "POST";   P = "/api/deployments"; B = '{"service":"hacker","version":"v1"}'; E = (Want 403 400) }
   @{ N = "record deploy, malformed JSON";  M = "POST";   P = "/api/deployments"; B = '{not json';           E = (Want 403 400) }
   @{ N = "webhook, empty alert list";      M = "POST";   P = "/api/alerts"; B = '{"status":"firing","alerts":[]}'; E = @{ none = 401; wrong = 401; viewer = 403; operator = 403; webhook = 200 } }

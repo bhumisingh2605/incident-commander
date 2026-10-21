@@ -1,218 +1,135 @@
-\# API
-
-
+# API Reference
 
 Base URL: `http://localhost:8080`
 
+All endpoints use **HTTP Basic authentication**. Passwords come from the environment variables described in [CONFIGURATION.md](CONFIGURATION.md).
 
+## Roles
 
-The API uses HTTP Basic authentication. After loading `.env.ps1`, the `$H` header used in the examples should authenticate as the operator. Verify the authentication setup in the project before relying on these examples.
+| Login | Role | Access |
+|---|---|---|
+| *(none)* | – | `GET /actuator/health` only |
+| `viewer` | `VIEWER` | Read-only: `GET /api/**` and the dashboard (`/ui/**`) |
+| `operator` | `OPERATOR` | Everything a viewer can do, plus investigate, approve/reject/execute proposals, record deployments, read `/actuator/prometheus`, and use `/debug/**` when enabled |
+| `alertmanager` | `WEBHOOK` | `POST /api/alerts` only |
 
+Any path not listed below is denied (`403`). Missing or wrong credentials return `401`.
 
+## Endpoints
 
-\## Roles
+### Identity and health
 
+| Method and path | Role | Description |
+|---|---|---|
+| `GET /api/me` | viewer+ | Caller name and roles |
+| `GET /actuator/health` | public | Liveness/readiness |
+| `GET /actuator/prometheus` | operator | Prometheus metrics |
 
+### Incidents
 
-| Login | Intended access |
+| Method and path | Role | Description |
+|---|---|---|
+| `GET /api/incidents?status=` | viewer+ | Latest 50 incidents, optionally filtered by status (case-insensitive) |
+| `GET /api/incidents/{id}` | viewer+ | Incident with its alerts, agent runs and tool calls. `404` if missing |
+| `POST /api/incidents/{id}/investigate` | operator | Queue a fresh AI investigation. `202` if queued, `404` if the incident is missing or already resolved |
+| `GET /api/incidents/{id}/postmortem` | viewer+ | Plain-text postmortem built from recorded events |
+| `GET /api/incidents/{id}/postmortem?ai=true` | operator | Same, plus AI-suggested prevention ideas (`403` for viewers) |
 
+Incident statuses: `OPEN`, `INVESTIGATING`, `DIAGNOSED`, `AWAITING_APPROVAL`, `ESCALATED`, `RESOLVED`.
+
+### Remediation proposals
+
+| Method and path | Role | Description |
+|---|---|---|
+| `GET /api/proposals?status=` | viewer+ | Latest proposals, optionally filtered by status |
+| `POST /api/proposals/{id}/approve` | operator | Approve **and immediately execute** the proposal |
+| `POST /api/proposals/{id}/reject` | operator | Reject the proposal |
+| `POST /api/proposals/{id}/execute` | operator | Execute an already-approved proposal |
+
+Action types are `RESTART_SERVICE` and `ROLLBACK_DEPLOY`. The target must be a registered service.
+
+| Status | Meaning |
 |---|---|
+| `200` | Decision recorded / action executed |
+| `404` | Unknown proposal |
+| `409` | Already decided, incident already resolved, service in cooldown, not approved, or another execution in progress |
+| `500` | Execution failed |
 
-| Unauthenticated | Health endpoint access may be permitted; other access depends on the security configuration |
+### Deployments
 
-| `viewer` | Read-only access to incidents, proposals, audit data, and UI |
-
-| `operator` | Viewer access plus investigation, proposal decisions, deployments, and debugging |
-
-| `alertmanager` | Alert submission through `POST /api/alerts` |
-
-
-
-Confirm the exact endpoint permissions against the current Spring Security configuration.
+| Method and path | Role | Description |
+|---|---|---|
+| `POST /api/deployments` | operator | Record a deployment (used as evidence by the analyst) |
 
 
-
-\## Endpoints
-
+{ "service": "payment-service", "version": "v2.1.0", "deployedBy": "operator", "notes": "retry logic" }
 
 
-| Method and path | Purpose |
+`service` must be a registered service and `version` is required (max 50 characters); otherwise `400`.
 
-|---|---|
+### Alert webhook
 
-| `GET /api/me` | Return the caller's identity and roles |
+| Method and path | Role | Description |
+|---|---|---|
+| `POST /api/alerts` | alertmanager | Receives Alertmanager webhook payloads |
 
-| `GET /api/incidents?status=` | List incidents, optionally filtered by status |
+Firing alerts create (or join) an incident and start an investigation. Resolved alerts close the incident once all of its alerts have cleared, unless it was escalated. Malformed individual alerts are skipped; a body without an `alerts` field returns `400`.
 
-| `GET /api/incidents/{id}` | Retrieve incident details |
+### Audit
 
-| `POST /api/incidents/{id}/investigate` | Queue an investigation |
+| Method and path | Role | Description |
+|---|---|---|
+| `GET /api/audit/tool-calls?limit=` | viewer+ | Recent model tool calls (default 20) |
+| `GET /api/audit/events?limit=&subject=&id=` | viewer+ | Audit events (default 50). `subject` must be `PROPOSAL` or `INCIDENT`, otherwise `400` |
 
-| `GET /api/incidents/{id}/postmortem` | Retrieve a text postmortem |
+### Debug (disabled by default)
 
-| `GET /api/incidents/{id}/postmortem?ai=true` | Request AI-generated prevention ideas, if supported |
+`GET /debug/analyze`, `/debug/analyze-fast`, `/debug/metrics`, `/debug/health`, `/debug/deps`, `/debug/logs` and similar are **only available when the app runs with `SPRING_PROFILES_ACTIVE=dev`**. Without it they return `404`. They exist for the scenario runner and manual tool testing.
 
-| `GET /api/proposals?status=` | List proposals, optionally filtered by status |
+## Examples
 
-| `POST /api/proposals/{id}/approve` | Approve a proposal |
-
-| `POST /api/proposals/{id}/reject` | Reject a proposal |
-
-| `POST /api/proposals/{id}/execute` | Execute an approved proposal |
-
-| `POST /api/deployments` | Record a deployment |
-
-| `POST /api/alerts` | Receive an alert webhook |
-
-| `GET /api/audit/tool-calls?limit=` | Inspect recorded model tool calls |
-
-| `GET /api/audit/events?limit=\&subject=\&id=` | Inspect recorded audit events |
-
-| `GET /actuator/health` | Check application health |
-
-| `GET /actuator/prometheus` | Expose application metrics |
-
-| `GET /debug/...` | Debug endpoints, depending on the configured routes |
+### curl (Linux, macOS, Git Bash)
 
 
+set -a; . ./.env; set +a            # loads the generated passwords
+OP="operator:$COMMANDER_OPERATOR_PASSWORD"
 
-Check controller mappings and security rules for the exact supported parameters, response codes, and roles.
+curl -u "$OP" http://localhost:8080/api/me
+curl -u "$OP" "http://localhost:8080/api/incidents?status=AWAITING_APPROVAL"
+curl -u "$OP" http://localhost:8080/api/incidents/1
+curl -u "$OP" -X POST http://localhost:8080/api/proposals/1/approve
 
-
-
-\## PowerShell examples
-
-
-
-Load environment variables first:
-
-
-
-```powershell
-
-cd C:\\Projects\\incident-commander
-
-. .\\.env.ps1
-
-```
+curl -u "$OP" -X POST http://localhost:8080/api/deployments \
+  -H 'Content-Type: application/json' \
+  -d '{"service":"payment-service","version":"v2.1.0","deployedBy":"operator","notes":"retry logic"}'
 
 
-
-Use the project's configured operator header to make authenticated requests. The examples below assume `$H` has already been initialized correctly.
-
+### PowerShell
 
 
-\### Identify the current user
-
-
-
-```powershell
+. .\.env.ps1     # defines the passwords and the $H operator header
 
 Invoke-RestMethod "http://localhost:8080/api/me" -Headers $H
+Invoke-RestMethod "http://localhost:8080/api/incidents?status=AWAITING_APPROVAL" -Headers $H
+Invoke-RestMethod "http://localhost:8080/api/incidents/1" -Headers $H
+Invoke-RestMethod -Method Post "http://localhost:8080/api/proposals/1/approve" -Headers $H
 
+$body = @{ service = "payment-service"; version = "v2.1.0"; deployedBy = "operator"; notes = "retry logic" } | ConvertTo-Json
+Invoke-RestMethod -Method Post "http://localhost:8080/api/deployments" -Headers $H -ContentType "application/json" -Body $body
 ```
 
-
-
-\### List incidents awaiting approval
-
-
-
-```powershell
-
-Invoke-RestMethod "http://localhost:8080/api/incidents?status=AWAITING\_APPROVAL" -Headers $H
-
-```
-
-
-
-\### Inspect an incident
-
-
-
-Replace `12` with an incident ID that exists in your database.
-
-
-
-```powershell
-
-Invoke-RestMethod "http://localhost:8080/api/incidents/12" -Headers $H
-
-```
-
-
-
-\### Record a deployment
-
-
-
-```powershell
-
-$body = @{
-
-&#x20;   service = "payment-service"
-
-&#x20;   version = "v2.1.0"
-
-&#x20;   deployedBy = "operator"
-
-&#x20;   notes = "retry logic"
-
-} | ConvertTo-Json
-
-
-
-Invoke-RestMethod `
-
-&#x20;   -Method Post `
-
-&#x20;   "http://localhost:8080/api/deployments" `
-
-&#x20;   -Headers $H `
-
-&#x20;   -ContentType "application/json" `
-
-&#x20;   -Body $body
-
-```
-
-
-
-Use only an example deployment payload accepted by the current controller.
-
-
-
-\## Status codes
-
-
-
-Common HTTP statuses include:
-
-
-
-\- `200`: request succeeded
-
-\- `202`: request accepted for asynchronous processing
-
-\- `400`: invalid request
-
-\- `401`: authentication required or failed
-
-\- `403`: authenticated but not authorized
-
-\- `404`: resource or route not found
-
-\- `409`: request conflicts with the current state or a business rule
-
-
-
-Actual responses depend on the endpoint and exception handling.
-
-
-
-\## Alert webhook
-
-
-
-Alertmanager sends alert data to `POST /api/alerts`. The expected payload and authentication must match the application's webhook controller and Alertmanager configuration. Never publish real passwords or secret values in this document.
-
+### Alertmanager payload (abridged)
+
+
+{
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "fingerprint": "3f9a1c2b7d4e5a60",
+      "labels": { "alertname": "HighErrorRate", "application": "order-service", "severity": "critical" },
+      "annotations": { "summary": "Error rate above 5% on order-service" },
+      "startsAt": "2026-10-20T10:15:00Z"
+    }
+  ]
+}

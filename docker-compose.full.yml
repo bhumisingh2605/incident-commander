@@ -13,7 +13,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      TZ: Asia/Kolkata
+      TZ: ${COMMANDER_TZ:-Asia/Kolkata}
+      # Set SPRING_PROFILES_ACTIVE=dev to enable the /debug endpoints (needed by scenarios/run-scenario.ps1).
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/commander
       SPRING_DATASOURCE_USERNAME: commander
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD by running . .\.env.ps1}
@@ -27,6 +29,9 @@ services:
       JAVA_TOOL_OPTIONS: "-Xmx512m"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # Lets the container reach Ollama on the host (built in on Docker Desktop, needed on native Linux).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     mem_limit: 768m
     depends_on:
       postgres:
@@ -43,3 +48,8 @@ services:
       timeout: 5s
       retries: 6
       start_period: 60s
+
+  # In the full stack Alertmanager reaches Commander by container name, not via the host.
+  alertmanager:
+    volumes:
+      - ./infra/alertmanager/alertmanager.full.yml:/etc/alertmanager/alertmanager.yml:ro

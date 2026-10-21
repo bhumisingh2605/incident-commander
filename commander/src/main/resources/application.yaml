@@ -31,7 +31,7 @@ server:
 
 commander:
   prometheus-url: http://localhost:9090
-
+  analysis-timeout-seconds: 600
 logging:
   pattern:
     level: "%5p [req=%X{requestId:-} inc=%X{incidentId:-} prop=%X{proposalId:-} run=%X{runId:-} user=%X{actor:-}]"

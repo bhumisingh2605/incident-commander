@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commander:
+    name: Commander tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: commander
+    env:
+      # Throwaway value: tests run against a Testcontainers Postgres, never a real database.
+      DB_PASSWORD: ci-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Make the Maven wrapper executable
+        run: chmod +x mvnw
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: commander-surefire-reports
+          path: commander/target/surefire-reports
+
+  sample-services:
+    name: ${{ matrix.service }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [order-service, payment-service]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Make the Maven wrapper executable
+        run: chmod +x mvnw
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+
+  docker-images:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [commander, sample-services]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Commander image
+        run: docker build -t incident-commander:ci commander
+      - name: Build order-service image
+        run: docker build -t order-service:ci services/order-service
+      - name: Build payment-service image
+        run: docker build -t payment-service:ci services/payment-service
+
+  compose-config:
+    name: Compose files are valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DB_PASSWORD: ci-only-password
+      COMMANDER_VIEWER_PASSWORD: ci-only-viewer-password
+      COMMANDER_OPERATOR_PASSWORD: ci-only-operator-password
+      COMMANDER_WEBHOOK_PASSWORD: ci-only-webhook-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate infrastructure compose file
+        run: docker compose -f docker-compose.yml config -q
+      - name: Validate full-stack compose override
+        run: docker compose -f docker-compose.yml -f docker-compose.full.yml config -q
+      - name: Check shell scripts
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done

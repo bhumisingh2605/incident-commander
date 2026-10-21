@@ -87,4 +87,11 @@ class ProposalControllerSecurityTest {
 
         verifyNoInteractions(proposals, executor);
     }
+    @Test
+    void debugEndpointsAreNotExposedByDefault() throws Exception {
+        mockMvc.perform(get("/debug/health")
+                        .param("service", "payment-service")
+                        .with(httpBasic("operator", "test-operator-password-123")))
+                .andExpect(status().isNotFound());
+    }
 }

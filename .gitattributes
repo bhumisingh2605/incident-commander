@@ -1,0 +1,4 @@
+# Keep shell scripts and the Maven wrapper on Unix line endings so they run on Linux/macOS/CI
+*.sh        text eol=lf
+Makefile    text eol=lf
+mvnw        text eol=lf
